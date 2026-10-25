@@ -40,7 +40,9 @@ const state = {
 
   // Step 5: Multi-Epoch Causal Simulation & Branching World States
   causalSimulation: null,
-  branches: {}, // Preserves { orig, branchA, branchB }
+  branches: {},
+  historyContexts: {},
+  loadedContextId: null,
   activeBranchKey: 'orig',
   selected3DObject: null,
   eraRenders: {},
@@ -298,15 +300,17 @@ function cacheDomElements() {
 // ============================================================================
 // Initialization
 // ============================================================================
-function initApp() {
+async function initApp() {
   cacheDomElements();
   initThreeViewport();
   bindEvents();
   checkBackendStatus();
-  loadSelectedSample(dom.sampleSelect ? dom.sampleSelect.value : 'samples/cloister_courtyard.jpg');
   setupTimelineScrubber();
   animateLoop();
-  loadDemoHistory().catch(err => showApiError(err.message));
+  try {
+    await loadSelectedSample(dom.sampleSelect ? dom.sampleSelect.value : 'samples/cloister_courtyard.jpg');
+    await loadDemoHistory();
+  } catch (err) { showApiError(err.message); }
 }
 
 async function checkBackendStatus() {
@@ -315,7 +319,7 @@ async function checkBackendStatus() {
     const data = await res.json();
     if (data.ok) {
       if (dom.modelMetaInfo) {
-        dom.modelMetaInfo.textContent = `Vertex AI (${data.project}) | ${data.model} | MoGe-2 + Blender 4.1 bpy`;
+        dom.modelMetaInfo.textContent = data.liveGenerationAvailable ? `Vertex AI (${data.project}) | ${data.model}` : 'CPU procedural demo available · Live AI credentials not configured';
       }
     } else {
       showApiError(data);
@@ -333,8 +337,10 @@ function setStatus(type, text) {
 }
 
 let toastTimeout = null;
-function showToast(text, durationMs = 2800) {
+let toastKind = null;
+function showToast(text, durationMs = 2800, kind = 'info') {
   if (!dom.cinematicToast) return;
+  toastKind = kind;
   if (toastTimeout) clearTimeout(toastTimeout);
   dom.cinematicToastText.textContent = text;
   dom.cinematicToast.classList.add('show');
@@ -345,6 +351,7 @@ function showToast(text, durationMs = 2800) {
 }
 
 function dismissToast() {
+  toastKind = null;
   if (!dom.cinematicToast) return;
   if (toastTimeout) {
     clearTimeout(toastTimeout);
@@ -652,6 +659,10 @@ async function loadPhotoFromDataUrl(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
+      state.loadedContextId = null;
+      state.mogeData = null; state.metricSummary = null;
+      state.round1 = null; state.round2 = null; state.critiqueR1 = null; state.critiqueR2 = null;
+      state.gridOverlayDataUrl = null; state.floorplanSvgDataUrl = null; state.targetRenderDataUrl = null;
       state.photoDataUrl = dataUrl;
       state.photoWidth = img.naturalWidth || img.width;
       state.photoHeight = img.naturalHeight || img.height;
@@ -852,7 +863,16 @@ function disposeWorld(world) {
   });
 }
 const navigateWorld = WorldNavigation.createNavigator(
-  url => new Promise((resolve, reject) => new THREE.GLTFLoader().load(url, g => resolve(g.scene), undefined, reject)),
+  url => new Promise((resolve, reject) => new THREE.GLTFLoader().load(url, gltf => {
+    let hasGeometry = false;
+    gltf.scene?.traverse(object => { if (object.isMesh && object.geometry?.attributes?.position?.count > 0) hasGeometry = true; });
+    if (!hasGeometry) {
+      if (gltf.scene) disposeWorld(gltf.scene);
+      reject(new Error('World contains no renderable geometry'));
+      return;
+    }
+    resolve(gltf.scene);
+  }, undefined, reject)),
   world => {
     [...proceduralGroup.children].forEach(child => { proceduralGroup.remove(child); disposeWorld(child); });
     proceduralGroup.add(world);
@@ -963,7 +983,6 @@ function setupTimelineScrubber() {
       }
     }
 
-    updateTimelineUI(targetYear, true);
     syncWorldToYear(targetYear);
   }
 
@@ -1059,132 +1078,110 @@ function scrubToAdjacentKeyframe(direction) {
 
 async function jumpToKeyframe(year) {
   dismissToast();
-  updateTimelineUI(year, true);
-  await syncWorldToYear(year);
+  return syncWorldToYear(year);
 }
 
-/**
- * Synchronizes the actual 3D world (Blender GLB meshes & grading) and Hero Era overlay to a year
- */
-async function syncWorldToYear(year) {
-  const requestedYear = year;
-  year = CausalHistory.eraAt(KEYFRAME_YEARS.map(year => ({year})), year).year;
-  let stageKey = 'alt2026';
-  if (year === 1206) stageKey = 'era1206';
-  else if (year === 1566) stageKey = 'era1566';
-  else if (year === 1938) stageKey = 'era1938';
-  else stageKey = state.activeBranchKey === 'orig' ? 'round2' : 'alt2026';
-
-  state.activeStage = stageKey;
-  syncStageButtons();
-
-  // If traveling backward in time (< 2026), hide the split photo overlay so the historical 3D world is fully immersive!
-  if (year < 2026 && dom.splitCompareOverlay && dom.splitCompareOverlay.style.display !== 'none') {
+let worldSelectionVersion = 0;
+/** Commit geometry, selected history, provenance and source context together. */
+async function syncWorldToYear(requestedYear, branchId = state.activeBranchKey, options = {}) {
+  if ((state.isGeneratingHistory || state.isReturnWarpActive) && !options.internal) return false;
+  const version = ++worldSelectionVersion;
+  navigateWorld(null); // Cancel older loads before preparing another reference photograph.
+  const branch = state.branches[branchId];
+  const era = CausalHistory.eraAt(branch?.eras || [], requestedYear);
+  if (!era?.blenderGlbUrl) {
+    await navigateWorld(null); // Invalidate an older pending world.
+    if (version === worldSelectionVersion) setStatus('err', 'No world is available at this date. Current world retained.');
+    return false;
+  }
+  let prepared;
+  try { prepared = await prepareHistoryContext(branch); }
+  catch (error) {
+    await navigateWorld(null);
+    if (version === worldSelectionVersion) setStatus('err', `Cannot load source context: ${error.message}`);
+    return false;
+  }
+  if (version !== worldSelectionVersion) return false;
+  const loaded = await loadBlenderGlbIntoScene(era.blenderGlbUrl);
+  if (version !== worldSelectionVersion) return false;
+  if (!loaded) {
+    setStatus('err', 'World load failed. Current world and history retained.');
+    showToast('World unavailable · previous world retained', 4500, 'world-error');
+    return false;
+  }
+  if (toastKind === 'world-error') dismissToast();
+  applyHistoryContext(branch, prepared);
+  state.selected3DObject = null;
+  state.activeBranchKey = branchId;
+  state.causalSimulation = branch;
+  state.displayedWorld = {branchId, year:Number(era.year), url:era.blenderGlbUrl};
+  state.activeStage = Number(era.year) === 1206 ? 'era1206' : Number(era.year) === 1566 ? 'era1566' : Number(era.year) === 1938 ? 'era1938' : branch.parentId ? 'alt2026' : 'round2';
+  updateTimelineUI(requestedYear, true);
+  syncStageButtons(); syncBranchButtons(); renderHistoryNavigator();
+  if (requestedYear < 2026 && dom.splitCompareOverlay) {
     dom.splitCompareOverlay.style.display = 'none';
     if (dom.toggleSplitSlider) dom.toggleSplitSlider.checked = false;
   }
-
-  // Update Hero Era Watermark typography
-  if (dom.heroYearNumber) dom.heroYearNumber.textContent = String(requestedYear);
-
-  const eraDescriptions = {
-    1206: {
-      suffix: state.activeBranchKey === 'orig' ? 'MEDIEVAL DRAW-WELL' : 'GOTHIC MONASTIC INTERVENTION',
-      title: '1206 · MEDIEVAL MONASTIC ERA',
-      provenance: state.activeBranchKey === 'orig'
-        ? 'Original Languedoc monastic cistern wellhead with oak hoist posts under open-air timber eaves.'
-        : 'Benedictine masons construct an octagonal Gothic limestone-and-bronze lavabo fountain pavilion at (X=0.02m, Z=-5.38m).',
-    },
-    1566: {
-      suffix: state.activeBranchKey === 'branchB' ? 'RENAISSANCE INTERVENTION' : 'RENAISSANCE ADAPTATION',
-      title: '1566 · RENAISSANCE ERA',
-      provenance: state.activeBranchKey === 'branchB'
-        ? 'Humanist scholars install a 12-baluster Carrara marble balustrade and gilded bronze equatorial astrolabe.'
-        : 'The 1206 bronze lavabo column develops a verdigris patina across 360 years of monastic courtyard humidity.',
-    },
-    1938: {
-      suffix: 'MET CLOISTERS RECONSTRUCTION',
-      title: '1938 · MUSEUM RECONSTRUCTION',
-      provenance: 'Abbey elements dismantled at Saint-Guilhem and conserved under the Met Cloisters 4×4 coffered glass skylight.',
-    },
-    2026: {
-      suffix: state.activeBranchKey === 'orig' ? 'ORIGINAL PRESENT' : 'ALTERNATE PRESENT',
-      title: state.activeBranchKey === 'orig' ? '2026 · VERIFIED BASELINE PRESENT' : '2026 · ALTERNATE PRESENT COUNTERFACTUAL',
-      provenance: state.activeBranchKey === 'orig'
-        ? 'Unaltered 2026 present-day courtyard viewed from the exact original registered camera pose [0,0,0].'
-        : 'Surviving 820-year-old Gothic Lavabo Pavilion standing in the cloister center with displaced fern planters.',
-    },
-  };
-
-  const info = eraDescriptions[year] || eraDescriptions[2026];
-  if (dom.heroYearSuffix) dom.heroYearSuffix.textContent = info.suffix;
-  if (dom.heroEraName) dom.heroEraName.textContent = info.title;
-  if (dom.heroEraProvenance) dom.heroEraProvenance.textContent = info.provenance;
-
-  if (state.activeBranchKey === 'orig') {
-    if (dom.heroYearSuffix) dom.heroYearSuffix.textContent = 'ILLUSTRATIVE DEMONSTRATION';
-    if (dom.heroEraName) dom.heroEraName.textContent = `${requestedYear} · PROCEDURAL COURTYARD`;
-    if (dom.heroEraProvenance) dom.heroEraProvenance.textContent = `Showing the ${year} illustrative world. Generate a reconstruction to use measured photograph geometry. No critic score has been independently verified.`;
-  }
-
-  // Apply actual 3D GLB architecture & photo grading
-  const era = CausalHistory.eraAt(state.branches[state.activeBranchKey]?.eras || [], requestedYear);
-  if (era) {
-    applyPhotoGrading(era.grading?.sepiaStrength || 0, era.grading?.warmth || 0);
-    await loadBlenderGlbIntoScene(era.blenderGlbUrl);
-  } else if (state.round2) {
-    await loadBlenderGlbIntoScene(state.round2.blenderGlbUrl);
-  }
-
+  const illustrative = Boolean(branch.demo);
+  const provenance = era.narrative || era.provenance || branch.provenance || (branch.parentId ? 'Generated counterfactual world.' : 'Generated reconstruction.');
+  const dateNote = Number(era.year) === Number(requestedYear) ? '' : `Requested ${requestedYear}; showing available ${era.year} geometry. `;
+  if (dom.heroYearNumber) dom.heroYearNumber.textContent = String(era.year);
+  if (dom.heroYearSuffix) dom.heroYearSuffix.textContent = illustrative ? 'ILLUSTRATIVE CPU DEMO' : branch.parentId ? 'COUNTERFACTUAL HISTORY' : 'RECONSTRUCTED PRESENT';
+  if (dom.heroEraName) dom.heroEraName.textContent = era.eraTitle || `${era.year} · ${branch.branchTitle || 'World'}`;
+  if (dom.heroEraProvenance) dom.heroEraProvenance.textContent = `${dateNote}${provenance}${illustrative ? ' Procedural demonstration; no AI reconstruction or critic score is claimed.' : ''}`;
+  if (dom.interventionInput && branch.intervention) dom.interventionInput.value = branch.intervention;
+  applyPhotoGrading(era.grading?.sepiaStrength || 0, era.grading?.warmth || 0);
+  setStatus('ok', `${illustrative ? 'CPU demo' : 'World ready'} · ${era.year}${dateNote ? ` (requested ${requestedYear})` : ''}`);
   renderer.render(scene, camera);
+  return true;
 }
 
 // ============================================================================
 // Signature RETURN TO PRESENT Action (Cinematic Sequence)
 // ============================================================================
-async function executeCinematicReturnToPresent() {
-  if (state.isReturnWarpActive) return;
+async function executeCinematicReturnToPresent(options = {}) {
+  if (state.isReturnWarpActive || (state.isGeneratingHistory && !options.internal)) return;
   state.isReturnWarpActive = true;
-  closeAllPopovers();
+  renderHistoryNavigator();
+  try {
+    closeAllPopovers();
 
-  showToast('WARPING THROUGH CENTURIES...', 1800);
+    showToast('WARPING THROUGH CENTURIES...', 1800);
 
-  // 1. Sequentially animate forward through alternate keyframes
-  const seq = [1206, 1566, 1938, 2026];
-  for (let i = 0; i < seq.length; i++) {
-    const yr = seq[i];
-    updateTimelineUI(yr, true);
-    await syncWorldToYear(yr);
-    // Subtle pause per era so user watches the world transform
-    await new Promise((r) => setTimeout(r, 680));
+    // 1. Sequentially animate forward through alternate keyframes
+    const seq = [1206, 1566, 1938, 2026];
+    for (let i = 0; i < seq.length; i++) {
+      const yr = seq[i];
+      if (!await syncWorldToYear(yr, state.activeBranchKey, {internal:true})) return false;
+      // Subtle pause per era so user watches the world transform
+      await new Promise((r) => setTimeout(r, 680));
+    }
+
+    // 2. Smoothly restore exact original camera pose [0,0,0], lookAt [0,0,-1], and original FOV
+    const baseFov = state.mogeData?.intrinsics?.fovYDeg || 75.0;
+    startCameraTween(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1), baseFov, 900);
+    await new Promise((r) => setTimeout(r, 920));
+
+    setCameraPreset('originalCam', false);
+
+    // 3. Reveal the Alternate Present with comparison slider
+    showToast('ALTERNATE PRESENT · 2026 REVEALED', 3200);
+
+    const comparePhotograph = !state.branches[state.activeBranchKey]?.demo;
+    if (dom.toggleSplitSlider) dom.toggleSplitSlider.checked = comparePhotograph;
+    if (dom.splitCompareOverlay) dom.splitCompareOverlay.style.display = comparePhotograph ? 'block' : 'none';
+    if (comparePhotograph) animateSplitSliderWipe(50, 750);
+
+    // 4. Reveal concise causal ancestry card for the transformed monument
+    setTimeout(() => {
+      inspectObjectCausalAncestry('monument');
+    }, 350);
+
+    return true;
+  } finally {
+    state.isReturnWarpActive = false;
+    renderHistoryNavigator();
   }
-
-  // 2. Smoothly restore exact original camera pose [0,0,0], lookAt [0,0,-1], and original FOV
-  const baseFov = state.mogeData?.intrinsics?.fovYDeg || 75.0;
-  startCameraTween(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1), baseFov, 900);
-  await new Promise((r) => setTimeout(r, 920));
-
-  setCameraPreset('originalCam', false);
-
-  // 3. Reveal the Alternate Present with comparison slider
-  showToast('ALTERNATE PRESENT · 2026 REVEALED', 3200);
-
-  if (dom.toggleSplitSlider) {
-    dom.toggleSplitSlider.checked = true;
-  }
-  if (dom.splitCompareOverlay) {
-    dom.splitCompareOverlay.style.display = 'block';
-  }
-
-  // Animate split slider from 0% to 50% smoothly
-  animateSplitSliderWipe(50, 750);
-
-  // 4. Reveal concise causal ancestry card for the transformed monument
-  setTimeout(() => {
-    inspectObjectCausalAncestry('monument');
-  }, 350);
-
-  state.isReturnWarpActive = false;
 }
 
 function animateSplitSliderWipe(targetPct = 50, durationMs = 700) {
@@ -1229,43 +1226,18 @@ function syncBranchButtons() {
 }
 
 async function switchTimelineBranch(branchKey) {
-  if (!state.branches[branchKey] && branchKey !== 'orig') {
+  if (state.isGeneratingHistory || state.isReturnWarpActive) return false;
+  if (!state.branches[branchKey]) {
+    if (branchKey !== 'branchA' && branchKey !== 'branchB') return false;
+    const forkYear = branchKey === 'branchB' ? 1566 : 1206;
     const prompt = branchKey === 'branchB'
       ? 'In 1566, install an ornate marble balustrade and bronze astrolabe sundial in the courtyard.'
       : 'In 1206, construct a Gothic bronze-and-limestone lavabo fountain canopy over the central wellhead.';
-    await step5RunMultiEpochCausalSimulation(prompt);
-    return;
+    return step5RunMultiEpochCausalSimulation(prompt, {forkYear});
   }
-  state.activeBranchKey = branchKey;
-  syncBranchButtons();
-
-  state.causalSimulation = state.branches[branchKey] || null;
-  renderHistoryNavigator();
-  if (branchKey === 'orig') {
-    showToast('Switched to Branch 0: Original Unaltered History');
-    await jumpToKeyframe(2026);
-    setStatus('ok', 'Branch 0: Unaltered Baseline');
-    return;
-  }
-
-  const branchPrompts = {
-    branchA:
-      'In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.',
-    branchB:
-      'In 1566 (Renaissance Adaptation), install an ornate carved marble balustrade and bronze astrolabe sundial monument in the central courtyard.',
-  };
-
-  if (state.branches[branchKey]) {
-    state.causalSimulation = state.branches[branchKey];
-    if (dom.interventionInput) {
-      dom.interventionInput.value = state.causalSimulation.intervention || branchPrompts[branchKey];
-    }
-    renderCausalInspector();
-    showToast(`Switched to ${state.causalSimulation.branchTitle || branchKey}`);
-    await jumpToKeyframe(2026);
-  } else {
-    await step5RunMultiEpochCausalSimulation(branchPrompts[branchKey]);
-  }
+  const ok = await syncWorldToYear(2026, branchKey);
+  if (ok) renderCausalInspector();
+  return ok;
 }
 
 // ============================================================================
@@ -1341,6 +1313,15 @@ function inspectObjectCausalAncestry(targetKey = 'monument', clickedMeshName = n
       };
   }
 
+  if (!Object.values(ancestryMap).includes(entry)) {
+    entry = {
+      persistentObjectId: clickedMeshName || 'scene-object', title: clickedMeshName || cs?.branchTitle || 'Selected world',
+      status: cs?.demo ? 'ILLUSTRATIVE CPU GEOMETRY' : 'GENERATED WORLD · UNVERIFIED ANCESTRY',
+      triggeringIntervention: cs?.intervention || 'Original source world; no intervention recorded.',
+      evolutionTimeline: (cs?.eras || []).map(era => `${era.year}: ${era.narrative || era.eraTitle || era.provenance || 'Available generated state'}`),
+      assumptions: cs?.demo ? 'Procedural demonstration. Historical accuracy and critic scores have not been independently verified.' : 'Only recorded world states are shown; causal claims require independent verification.'
+    };
+  }
   const isInvariant = entry.status.includes('INVARIANT') || entry.status.includes('ORIGINAL');
   dom.ancestryStatusBadge.textContent = entry.status;
   dom.ancestryStatusBadge.style.background = isInvariant ? 'rgba(56,189,248,0.18)' : 'rgba(16,185,129,0.18)';
@@ -1537,7 +1518,7 @@ async function step3RunAdversarialCritic() {
   setStatus('ok', `Step 3 Complete: Critic Score ${state.critiqueR1.overallRatingOutOf10}/10`);
 }
 
-async function step4RewriteAndRerenderRound2() {
+async function step4RewriteAndRerenderRound2(options = {}) {
   if (!state.critiqueR1) await step3RunAdversarialCritic();
   hideApiError();
   setStatus('busy', 'Step 4: Argon Rewriting bpy Code (Round 2)...');
@@ -1566,11 +1547,10 @@ async function step4RewriteAndRerenderRound2() {
   const reconstructionId = crypto.randomUUID();
   state.branches[reconstructionId] = CausalHistory.freeze({
     id: reconstructionId, parentId: null, forkYear: null,
-    branchTitle: 'Reconstructed present',
-    eras: [{ year: 2026, eraBpyCode: data.round2.rewrittenBpyCode, blenderGlbUrl: data.round2.blenderGlbUrl }]
+    branchTitle: 'Reconstructed present', contextId: captureHistoryContext(),
+    eras: [{ year: 2026, eraTitle: 'Reconstructed present', provenance: 'AI-authored geometry; critic results are shown separately.', eraBpyCode: data.round2.rewrittenBpyCode, blenderGlbUrl: data.round2.blenderGlbUrl }]
   });
-  state.activeBranchKey = reconstructionId;
-  state.causalSimulation = state.branches[reconstructionId];
+  persistHistories();
   renderHistoryNavigator();
   state.latencies.rewriteR2Ms = data.latencyMs || 0;
   state.latencies.blenderR2Ms = data.round2.blenderLatencyMs || 0;
@@ -1579,7 +1559,7 @@ async function step4RewriteAndRerenderRound2() {
     applyThreeJsLightingConfig(data.round2.updatedThreeJsConfig);
   }
 
-  await loadBlenderGlbIntoScene(data.round2.blenderGlbUrl);
+  if (!await syncWorldToYear(2026, reconstructionId, {internal:Boolean(options.internal)})) throw new Error('Reconstruction GLB failed to load');
   state.activeStage = 'round2';
   syncStageButtons();
 
@@ -1632,19 +1612,49 @@ async function step4RewriteAndRerenderRound2() {
 /**
  * Step 5: Multi-Epoch Causal Simulation with live streaming progress
  */
-async function step5RunMultiEpochCausalSimulation(customIntervention) {
-  let parentId = state.activeBranchKey;
-  const forkYear = state.activeYear;
-  const parentEra = CausalHistory.eraAt(state.branches[parentId]?.eras || [], forkYear);
-  if (!state.round2) {
-    await step4RewriteAndRerenderRound2();
-    if (!parentEra?.eraBpyCode) parentId = state.activeBranchKey;
+const disabledGenerationControls = new Map();
+function setHistoryGenerationBusy(busy) {
+  state.isGeneratingHistory = busy;
+  if (busy) {
+    const controls = Object.entries(dom).filter(([key, value]) => value && /^(btnBranch|btnApplyIntervention|btnStep|btnRun|btnReturnToPresent|btnDirect|btnOpenIntervene|sampleSelect|photoInput|timeScrubberRange)/.test(key)).map(([,value]) => value);
+    controls.push(...(dom.stageButtons || []), ...(dom.camButtons || []));
+    const demoButton = globalThis.document?.getElementById('btnThreeMinuteDemo');
+    if (demoButton) controls.push(demoButton);
+    for (const control of controls) {
+      if (!('disabled' in control)) continue;
+      disabledGenerationControls.set(control, control.disabled);
+      control.disabled = true;
+    }
+  } else {
+    for (const [control, wasDisabled] of disabledGenerationControls) control.disabled = wasDisabled;
+    disabledGenerationControls.clear();
   }
+  renderHistoryNavigator();
+}
+async function step5RunMultiEpochCausalSimulation(customIntervention, options = {}) {
+  if (state.isGeneratingHistory || state.isReturnWarpActive) return false;
+  setHistoryGenerationBusy(true);
+  try { return await performCausalHistoryGeneration(customIntervention, options); }
+  catch (error) { showApiError(error.message); throw error; }
+  finally { setHistoryGenerationBusy(false); }
+}
+async function performCausalHistoryGeneration(customIntervention, options = {}) {
+  const interventionTextInput = customIntervention || dom.interventionInput?.value.trim() || 'In 1206, construct a Gothic lavabo fountain canopy.';
+  const forkYear = CausalHistory.interventionYear(interventionTextInput, options.forkYear, state.activeYear);
+  let parentId = state.activeBranchKey;
+  let parentEra = CausalHistory.eraAt(state.branches[parentId]?.eras || [], forkYear);
+  if (!parentEra?.eraBpyCode && !state.branches[parentId]?.demo) {
+    await step4RewriteAndRerenderRound2({internal:true});
+    parentId = state.activeBranchKey;
+    parentEra = CausalHistory.eraAt(state.branches[parentId]?.eras || [], forkYear);
+  }
+  const parent = state.branches[parentId];
+  const preparedContext = await prepareHistoryContext(parent);
+  if (!parent?.contextId || !state.historyContexts[parent.contextId]) throw new Error('This history has no saved source context. Reconstruct it before continuing.');
+  applyHistoryContext(parent, preparedContext);
 
   const interventionText =
-    customIntervention ||
-    (dom.interventionInput ? dom.interventionInput.value.trim() : '') ||
-    'In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.';
+    interventionTextInput;
 
   if (dom.interventionInput) dom.interventionInput.value = interventionText;
   hideApiError();
@@ -1652,25 +1662,31 @@ async function step5RunMultiEpochCausalSimulation(customIntervention) {
   // Show streaming progress strip
   if (dom.propagationProgressBox) {
     dom.propagationProgressBox.style.display = 'flex';
-    dom.propagationStatusText.textContent = 'Gemini 4 Argon reasoning through multi-century causal chain...';
+    dom.propagationStatusText.textContent = parent.demo ? 'CPU Blender compiling procedural causal worlds…' : 'Gemini reasoning through the multi-century causal chain…';
   }
   if (dom.btnApplyIntervention) dom.btnApplyIntervention.disabled = true;
 
-  setStatus('busy', 'Step 5: Propagating Causal 3D Simulation...');
+  setStatus('busy', parent.demo ? 'CPU Blender: generating procedural history…' : 'Step 5: Propagating causal history…');
 
   try {
     const payloadBody = {
       originalImageDataUrl: state.photoDataUrl,
-      verifiedBpyCode: parentEra?.eraBpyCode || state.round2.rewrittenBpyCode,
+      verifiedBpyCode: parentEra?.eraBpyCode || state.round2?.rewrittenBpyCode || '',
+      parentId, forkYear, demo: Boolean(parent.demo), interventionPrompt:interventionText,
       interventionText: `Fork from ${forkYear}. Parent history: ${JSON.stringify(state.branches[parentId]?.causalChainSummary || "Original baseline")}. Preserve all pre-fork history. ${interventionText}`,
       metricSummary: state.metricSummary,
       thinkingLevel: dom.thinkingLevelSelect ? dom.thinkingLevelSelect.value : 'MEDIUM',
     };
 
     let causalData = null;
+    if (parent.demo) {
+      const response = await fetch('/api/demo/causal', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payloadBody)});
+      causalData = await response.json();
+      if (!response.ok || !causalData.ok) throw new Error(causalData.error || causalData.exactApiError?.message || 'CPU demo generation failed');
+    }
 
     // Attempt streaming endpoint for live timeline progress
-    try {
+    if (!causalData) try {
       const streamRes = await fetch('/api/argon/mvp3-causal-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1723,14 +1739,12 @@ async function step5RunMultiEpochCausalSimulation(customIntervention) {
       causalData = json;
     }
 
-    state.causalSimulation = causalData.causalSimulation;
     state.latencies.causalMs = causalData.latencyMs || 0;
 
     const branchKey = crypto.randomUUID();
-    state.branches[branchKey] = CausalHistory.fork(state.branches, parentId, forkYear, causalData.causalSimulation, branchKey);
-    state.activeBranchKey = branchKey;
-    try { localStorage.setItem('timetravel.histories.v1', JSON.stringify(state.branches)); }
-    catch (_) { showToast('History retained in this session; browser storage is full.'); }
+    state.branches[branchKey] = CausalHistory.fork(state.branches, parentId, forkYear, {...causalData.causalSimulation, intervention:interventionText}, branchKey);
+    persistHistories();
+    if (!await syncWorldToYear(2026, branchKey, {internal:true})) throw new Error('Generated history is saved, but its world could not be loaded.');
     state.causalSimulation = state.branches[branchKey];
     renderHistoryNavigator();
     syncBranchButtons();
@@ -1741,7 +1755,7 @@ async function step5RunMultiEpochCausalSimulation(customIntervention) {
     for (let i = 0; i < eras.length; i++) {
       const era = eras[i];
       const stageKey = i === 0 ? 'era1206' : i === 1 ? 'era1566' : i === 2 ? 'era1938' : 'alt2026';
-      await syncWorldToYear(era.year);
+      if (!await syncWorldToYear(era.year, branchKey, {internal:true})) throw new Error(`Cannot capture unavailable ${era.year} world`);
       const shot = dom.threeCanvas.toDataURL('image/png');
       state.eraRenders[stageKey] = shot;
       eraShots.push({
@@ -1757,25 +1771,26 @@ async function step5RunMultiEpochCausalSimulation(customIntervention) {
     closeInterventionModal();
 
     // Trigger signature Return to Present warp!
-    await executeCinematicReturnToPresent();
+    await executeCinematicReturnToPresent({internal:true});
 
     addCallLog({
       stage: 'Step 5: Multi-Epoch Causal 3D Simulation',
       latencyMs: causalData.latencyMs + (state.causalSimulation.totalBlenderLatencyMs || 0),
       cached: causalData.cached,
-      summary: `Compiled 4 bespoke Blender GLB eras (${eras.map((e) => e.year).join(' → ')})`,
+      summary: `${parent.demo ? 'CPU procedural demo' : 'Generated history'}: ${eras.length} eras (${eras.map((e) => e.year).join(' → ')})`,
     });
 
     await saveMilestoneToGallery({
       id: `milestone_5_causal_${state.activeBranchKey}`,
       stageBadge: `CAUSAL BRANCH (${state.activeBranchKey.toUpperCase()})`,
-      title: `Milestone 5 (${state.activeBranchKey === 'branchB' ? 'Branch B' : 'Branch A'}): Multi-Epoch Causal Simulation`,
+      title: `History: ${state.causalSimulation.branchTitle || 'Causal simulation'}`,
       description: state.causalSimulation.causalChainSummary || interventionText,
-      metricsSummary: `4 Compiled Era GLBs | Returned to Camera [0,0,0]`,
+      metricsSummary: `${eras.length} era worlds | ${parent.demo ? 'Procedural CPU demonstration' : 'AI generation'}`,
       screenshots: eraShots,
     });
 
-    setStatus('ok', 'MVP3 Complete — Inspect Timeline, Critic or Gallery!');
+    setStatus('ok', `${parent.demo ? 'CPU procedural history ready' : 'Causal history ready'} · ${eras.length} eras`);
+    return branchKey;
   } finally {
     if (dom.btnApplyIntervention) dom.btnApplyIntervention.disabled = false;
     if (dom.propagationProgressBox) dom.propagationProgressBox.style.display = 'none';
@@ -2075,9 +2090,9 @@ function bindEvents() {
   }
 
   // Timeline Branch buttons
-  if (dom.btnBranchOrig) dom.btnBranchOrig.addEventListener('click', () => switchTimelineBranch('orig'));
-  if (dom.btnBranchA) dom.btnBranchA.addEventListener('click', () => switchTimelineBranch('branchA'));
-  if (dom.btnBranchB) dom.btnBranchB.addEventListener('click', () => switchTimelineBranch('branchB'));
+  if (dom.btnBranchOrig) dom.btnBranchOrig.addEventListener('click', () => switchTimelineBranch('orig').catch(err => showApiError(err.message)));
+  if (dom.btnBranchA) dom.btnBranchA.addEventListener('click', () => switchTimelineBranch('branchA').catch(err => showApiError(err.message)));
+  if (dom.btnBranchB) dom.btnBranchB.addEventListener('click', () => switchTimelineBranch('branchB').catch(err => showApiError(err.message)));
   if (dom.btnOpenInterveneModal) dom.btnOpenInterveneModal.addEventListener('click', () => openInterventionModal('Central Courtyard Monument'));
 
   // Signature RETURN TO PRESENT action
@@ -2086,7 +2101,7 @@ function bindEvents() {
   // Intervention modal
   if (dom.btnCloseInterveneModal) dom.btnCloseInterveneModal.addEventListener('click', closeInterventionModal);
   if (dom.btnCancelIntervene) dom.btnCancelIntervene.addEventListener('click', closeInterventionModal);
-  if (dom.btnApplyIntervention) dom.btnApplyIntervention.addEventListener('click', () => step5RunMultiEpochCausalSimulation());
+  if (dom.btnApplyIntervention) dom.btnApplyIntervention.addEventListener('click', () => step5RunMultiEpochCausalSimulation().catch(err => showApiError(err.message)));
 
   document.querySelectorAll('.preset-idea-pill').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -2099,8 +2114,8 @@ function bindEvents() {
   if (dom.btnCloseAncestryPopover) dom.btnCloseAncestryPopover.addEventListener('click', () => {
     dom.causalAncestryPopover.style.display = 'none';
   });
-  if (dom.btnDirectInterveneLavabo) dom.btnDirectInterveneLavabo.addEventListener('click', () => switchTimelineBranch('branchA'));
-  if (dom.btnDirectInterveneAstrolabe) dom.btnDirectInterveneAstrolabe.addEventListener('click', () => switchTimelineBranch('branchB'));
+  if (dom.btnDirectInterveneLavabo) dom.btnDirectInterveneLavabo.addEventListener('click', () => switchTimelineBranch('branchA').catch(err => showApiError(err.message)));
+  if (dom.btnDirectInterveneAstrolabe) dom.btnDirectInterveneAstrolabe.addEventListener('click', () => switchTimelineBranch('branchB').catch(err => showApiError(err.message)));
   if (dom.btnDirectScaleUp) dom.btnDirectScaleUp.addEventListener('click', () => {
     const target = state.selected3DObject || proceduralGroup;
     target.scale.multiplyScalar(1.15);
@@ -2120,7 +2135,7 @@ function bindEvents() {
   if (dom.btnStep2AuthorR1) dom.btnStep2AuthorR1.addEventListener('click', step2AuthorRound1World);
   if (dom.btnStep3Critic) dom.btnStep3Critic.addEventListener('click', step3RunAdversarialCritic);
   if (dom.btnStep4RewriteR2) dom.btnStep4RewriteR2.addEventListener('click', step4RewriteAndRerenderRound2);
-  if (dom.btnStep5Causal) dom.btnStep5Causal.addEventListener('click', () => step5RunMultiEpochCausalSimulation());
+  if (dom.btnStep5Causal) dom.btnStep5Causal.addEventListener('click', () => step5RunMultiEpochCausalSimulation().catch(err => showApiError(err.message)));
 
   if (dom.sampleSelect) {
     dom.sampleSelect.addEventListener('change', () => loadSelectedSample(dom.sampleSelect.value));
@@ -2315,27 +2330,98 @@ function renderHistoryNavigator() {
     const button = document.createElement('button');
     button.className = branch.id === state.activeBranchKey ? 'selected' : '';
     button.textContent = branch.id === 'orig' ? 'Original · illustrative world' : branch.parentId ? `${branch.branchTitle || 'Alternate history'} · fork ${branch.forkYear}` : branch.branchTitle;
-    button.title = branch.parentId ? `Parent: ${branch.parentId} · Fork: ${branch.forkYear}` : 'Root history · procedural demonstration, not an AI reconstruction';
-    button.onclick = () => switchTimelineBranch(branch.id);
+    button.title = branch.parentId ? `Parent: ${branch.parentId} · Fork: ${branch.forkYear}` : branch.demo ? 'Root history · procedural demonstration, not an AI reconstruction' : 'Root history · generated reconstruction';
+    button.disabled = Boolean(state.isGeneratingHistory || state.isReturnWarpActive);
+    button.onclick = () => switchTimelineBranch(branch.id).catch(err => showApiError(err.message));
     panel.append(button);
     if (branch.parentId) {
       const relation = document.createElement('small'); relation.textContent = `↳ ${branch.parentId.slice(0,8)} → ${branch.forkYear}`; panel.append(relation);
     }
   }
 }
+const HISTORY_STORAGE_KEY = 'timetravel.histories.v2';
+function captureHistoryContext() {
+  const contextId = crypto.randomUUID();
+  state.historyContexts[contextId] = CausalHistory.freeze(JSON.parse(JSON.stringify({
+    photoDataUrl:state.photoDataUrl, samplePath:state.samplePath, photoWidth:state.photoWidth, photoHeight:state.photoHeight,
+    metricSummary:state.metricSummary, gridOverlayDataUrl:state.gridOverlayDataUrl,
+    floorplanSvgDataUrl:state.floorplanSvgDataUrl, targetRenderDataUrl:state.targetRenderDataUrl
+  })));
+  state.loadedContextId = contextId;
+  return contextId;
+}
+function persistHistories() {
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify({branches:state.branches, contexts:state.historyContexts}));
+    return true;
+  } catch (_) {
+    showToast('History retained in this session; browser storage is unavailable or full.', 5000);
+    return false;
+  }
+}
+async function prepareHistoryContext(branch) {
+  const context = state.historyContexts[branch?.contextId];
+  if (!context?.photoDataUrl || state.loadedContextId === branch.contextId) return null;
+  const image = await new Promise((resolve,reject) => {
+    const img = new Image(); img.onload = () => resolve(img); img.onerror = () => reject(new Error('Saved reference photograph unavailable')); img.src = context.photoDataUrl;
+  });
+  return {context,image};
+}
+function applyHistoryContext(branch, prepared) {
+  const context = state.historyContexts[branch?.contextId];
+  if (!context || state.loadedContextId === branch.contextId) return;
+  state.samplePath = context.samplePath;
+  state.photoDataUrl = context.photoDataUrl;
+  state.photoWidth = context.photoWidth;
+  state.photoHeight = context.photoHeight;
+  state.metricSummary = context.metricSummary;
+  state.gridOverlayDataUrl = context.gridOverlayDataUrl;
+  state.floorplanSvgDataUrl = context.floorplanSvgDataUrl;
+  state.targetRenderDataUrl = context.targetRenderDataUrl;
+  state.photoImgElement = prepared?.image || state.photoImgElement;
+  if (dom.splitOriginalImg) dom.splitOriginalImg.src = context.photoDataUrl;
+  if (photoMesh) {scene.remove(photoMesh); photoMesh = null;}
+  if (wireframeMesh) {scene.remove(wireframeMesh); wireframeMesh = null;}
+  if (dynamicPhotoTexture) dynamicPhotoTexture.dispose();
+  dynamicPhotoTexture = null; basePhotoCanvas = null; dynamicTextureCanvas = null;
+  state.mogeData = null;
+  state.round1 = null; state.round2 = null; state.critiqueR1 = null; state.critiqueR2 = null;
+  if (context.metricSummary?.fovYDeg) {camera.fov = context.metricSummary.fovYDeg;camera.updateProjectionMatrix();}
+  state.loadedContextId = branch.contextId;
+}
 async function loadDemoHistory() {
   const response = await fetch('/samples/worlds/manifest.json');
   if (!response.ok) throw new Error('Demo worlds missing: run bash scripts/setup-cloud.sh');
   const manifest = await response.json();
-  state.branches.orig = CausalHistory.freeze({id:'orig', parentId:null, forkYear:null, eras:manifest.eras});
   try {
-    const saved = JSON.parse(localStorage.getItem('timetravel.histories.v1') || '{}');
-    for (const [id, branch] of Object.entries(saved)) {
-      if (id !== 'orig' && branch.id === id && Array.isArray(branch.eras)) state.branches[id] = CausalHistory.freeze(branch);
+    const saved = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '{}');
+    for (const [id, context] of Object.entries(saved.contexts || {})) state.historyContexts[id] = CausalHistory.freeze(context);
+    for (const [id, branch] of Object.entries(saved.branches || {})) {
+      if (branch.id === id && Array.isArray(branch.eras)) state.branches[id] = CausalHistory.freeze(branch);
     }
-  } catch (_) { /* Unavailable or invalid local storage does not block startup. */ }
-  renderHistoryNavigator();
-  syncBranchButtons();
-  await syncWorldToYear(state.activeYear);
-  showToast('ILLUSTRATIVE 3D WORLD · Generate to reconstruct your photograph', 6000);
+  } catch (_) { /* Invalid storage cannot prevent a fresh procedural demo. */ }
+  if (!state.branches.orig) state.branches.orig = CausalHistory.freeze({
+    id:'orig', parentId:null, forkYear:null, branchTitle:'Original illustrative world', demo:true,
+    provenance:manifest.provenance, contextId:captureHistoryContext(), eras:manifest.eras
+  });
+  persistHistories();
+  renderHistoryNavigator(); syncBranchButtons();
+  await syncWorldToYear(state.activeYear, 'orig');
+  const demoButton = document.getElementById('btnThreeMinuteDemo');
+  if (demoButton) demoButton.addEventListener('click', () => runThreeMinuteDemo().catch(err => showApiError(err.message)));
+  showToast('CPU PROCEDURAL DEMO · No AI reconstruction or critic score claimed', 6000);
+}
+async function runThreeMinuteDemo() {
+  const button = document.getElementById('btnThreeMinuteDemo');
+  if (button) button.disabled = true;
+  try {
+    if (!await switchTimelineBranch('orig')) throw new Error('Baseline world unavailable');
+    await jumpToKeyframe(1206);
+    const first = await step5RunMultiEpochCausalSimulation('In 1206, construct a Gothic bronze-and-limestone lavabo fountain canopy.', {forkYear:1206});
+    await switchTimelineBranch('orig');
+    await switchTimelineBranch(first);
+    const second = await step5RunMultiEpochCausalSimulation('In 1566, add a marble balustrade and bronze astrolabe sundial.', {forkYear:1566});
+    showToast('Two preserved causal histories · select any parent or era to compare',6000);
+    return {first,second};
+  } finally {if (button) button.disabled = false;}
 }

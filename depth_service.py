@@ -1,11 +1,14 @@
 import base64
 import hashlib
 import io
+import ipaddress
 import json
 import math
 import os
+import re
 import time
 import urllib.request
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -14,12 +17,11 @@ import cv2
 import numpy as np
 from PIL import Image
 
-PORT = 3457
+PORT = int(os.environ.get('DEPTH_SERVICE_PORT', '3457'))
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / ".cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 ENV_FILE = BASE_DIR / ".env"
-FALLBACK_ENV_FILE = Path.home() / "MyTests" / "CrueltyCam" / ".env.local"
 AI3D_BASE_URL = "https://api.ai3d.dev/v2"
 
 
@@ -27,7 +29,7 @@ def load_ai3d_api_key() -> str:
     key = os.environ.get("AI3D_API_KEY", "").strip()
     if key:
         return key
-    for path in (ENV_FILE, FALLBACK_ENV_FILE):
+    for path in (ENV_FILE,):
         if path.exists():
             for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
                 if line.startswith("AI3D_API_KEY="):
@@ -39,6 +41,55 @@ def load_ai3d_api_key() -> str:
 
 AI3D_API_KEY = load_ai3d_api_key()
 print(f"[MoGe2Service] AI3D_API_KEY loaded: {'YES' if AI3D_API_KEY else 'NO'} (Endpoint: {AI3D_BASE_URL})")
+
+
+def validate_artifact_url(url: str):
+    """Accept HTTPS public DNS destinations; never send the API key to another host."""
+    if not isinstance(url, str) or any(ord(char) < 33 for char in url):
+        raise ValueError("AI3D artifact URL must be an HTTPS URL without whitespace")
+    parsed = urlsplit(url)
+    hostname = parsed.hostname
+    if (parsed.scheme != "https" or not hostname or parsed.username is not None
+            or parsed.password is not None or parsed.port not in (None, 443)
+            or parsed.fragment or "\\" in url):
+        raise ValueError("AI3D artifact URL must use HTTPS without userinfo, fragments, or nonstandard ports")
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("AI3D artifact URL must use a public DNS hostname")
+    labels = hostname.split(".")
+    if (len(hostname) > 253 or len(labels) < 2
+            or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels)
+            or not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", labels[-1])
+            or hostname.endswith((".localhost", ".local", ".internal"))):
+        raise ValueError("AI3D artifact URL must use a public DNS hostname")
+    return parsed
+
+
+def artifact_request(url: str):
+    parsed = validate_artifact_url(url)
+    request = urllib.request.Request(url, method="GET")
+    if parsed.hostname == "api.ai3d.dev":
+        # Unredirected headers also protect against accidental cross-host forwarding.
+        request.add_unredirected_header("Authorization", f"Bearer {AI3D_API_KEY}")
+    return request
+
+
+class ArtifactRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        parsed = validate_artifact_url(newurl)
+        redirected = super().redirect_request(request, fp, code, msg, headers, newurl)
+        if redirected is not None:
+            redirected.remove_header("Authorization")
+            if parsed.hostname == "api.ai3d.dev":
+                redirected.add_unredirected_header("Authorization", f"Bearer {AI3D_API_KEY}")
+        return redirected
+
+
+# The standard opener retains environment proxy handling and normal TLS verification.
+_ARTIFACT_OPENER = urllib.request.build_opener(ArtifactRedirectHandler())
 
 
 def run_moge2_remote_job(img_bytes: bytes, sha256_hex: str) -> Path:
@@ -131,13 +182,13 @@ def run_moge2_remote_job(img_bytes: bytes, sha256_hex: str) -> Path:
         name = art.get("name")
         dl_url = art.get("download_url")
         if name in wanted and dl_url:
-            req_dl = urllib.request.Request(
-                dl_url,
-                headers={"Authorization": f"Bearer {AI3D_API_KEY}"},
-                method="GET",
-            )
-            with urllib.request.urlopen(req_dl, timeout=90) as resp:
+            req_dl = artifact_request(dl_url)
+            with _ARTIFACT_OPENER.open(req_dl, timeout=90) as resp:
                 (job_dir / name).write_bytes(resp.read())
+
+    required = ("points.exr", "depth.exr", "image.png")
+    if any(not (job_dir / name).is_file() for name in required):
+        raise RuntimeError("AI3D MoGe-2 response is missing required geometry artifacts")
 
     (job_dir / "job_meta.json").write_text(json.dumps(job_info, indent=2), encoding="utf-8")
     return job_dir
@@ -146,6 +197,11 @@ def run_moge2_remote_job(img_bytes: bytes, sha256_hex: str) -> Path:
 def parse_moge2_artifacts(job_dir: Path, grid_w: int = 192, grid_h: int = 168) -> dict:
     depth_exr = cv2.imread(str(job_dir / "depth.exr"), cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
     points_exr = cv2.imread(str(job_dir / "points.exr"), cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+
+    if points_exr is None or points_exr.ndim != 3 or points_exr.shape[2] != 3:
+        raise RuntimeError("AI3D points.exr is missing or is not a three-channel point map")
+    if grid_w < 2 or grid_h < 2:
+        raise ValueError("MoGe-2 output grids must be at least 2 by 2")
 
     # OpenCV BGR -> X is channel 2 (R), Y is channel 1 (G), Z is channel 0 (B)
     X_full = points_exr[..., 2].astype(np.float32)
@@ -157,7 +213,9 @@ def parse_moge2_artifacts(job_dir: Path, grid_w: int = 192, grid_h: int = 168) -
     aspect = float(w) / max(1.0, float(h))
 
     # Clean non-finite values
-    valid_mask = np.isfinite(Z_full) & (Z_full > 0.05)
+    valid_mask = np.isfinite(X_full) & np.isfinite(Y_full) & np.isfinite(Z_full) & (Z_full > 0.05)
+    if not np.any(valid_mask):
+        raise RuntimeError("AI3D point map contains no valid finite geometry")
     z_min = float(np.min(Z_full[valid_mask])) if np.any(valid_mask) else 1.5
     z_max = float(np.max(Z_full[valid_mask])) if np.any(valid_mask) else 5.0
     Z_clean = np.where(valid_mask, Z_full, z_max)
@@ -165,7 +223,7 @@ def parse_moge2_artifacts(job_dir: Path, grid_w: int = 192, grid_h: int = 168) -
     Y_clean = np.where(valid_mask, Y_full, 0.0)
 
     # Recover exact MoGe-2 vertical FOV from top/bottom camera rays
-    row_top = max(4, int(h * 0.05))
+    row_top = min(h - 1, max(4, int(h * 0.05)))
     col_mid = w // 2
     v_norm = abs((row_top + 0.5) / float(h) * 2.0 - 1.0)
     tan_half_fov_y = abs(float(Y_clean[row_top, col_mid]) / max(0.1, float(Z_clean[row_top, col_mid]))) / max(0.05, v_norm)

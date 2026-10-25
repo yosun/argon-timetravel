@@ -112,7 +112,10 @@ def make_pbr_material(
         bsdf.inputs["Roughness"].default_value = float(roughness)
         bsdf.inputs["Metallic"].default_value = float(metallic)
         if alpha < 0.999:
-            mat.blend_method = "BLEND"
+            if hasattr(mat, "surface_render_method"):
+                mat.surface_render_method = "DITHERED"
+            else:
+                mat.blend_method = "BLEND"
             if "Alpha" in bsdf.inputs:
                 bsdf.inputs["Alpha"].default_value = float(alpha)
 
@@ -374,6 +377,9 @@ def main():
     out_script_path = Path(argv[idx + 3])
     out_telemetry_path = Path(argv[idx + 4]) if len(argv) > idx + 4 else out_glb_path.with_suffix(".telemetry.json")
 
+    out_glb_path.parent.mkdir(parents=True, exist_ok=True)
+    out_script_path.parent.mkdir(parents=True, exist_ok=True)
+    out_telemetry_path.parent.mkdir(parents=True, exist_ok=True)
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     clear_scene()
 
@@ -410,8 +416,18 @@ def main():
 
     telemetry = compute_scene_telemetry(ground_y_three=ground_y)
     telemetry["execError"] = exec_error
-    if telemetry["totalVertices"] > MAX_VERTICES_LIMIT:
-        raise RuntimeError(f"Scene exceeded vertex limit ({telemetry['totalVertices']} > {MAX_VERTICES_LIMIT})")
+    if not bpy_code:
+        exec_error = "Scene source is empty"
+    elif not exec_error and (telemetry["objectCount"] < 1 or telemetry["totalVertices"] < 3 or telemetry["totalTriangles"] < 1):
+        exec_error = "Scene contains no renderable mesh geometry"
+    elif not exec_error and telemetry["totalVertices"] > MAX_VERTICES_LIMIT:
+        exec_error = f"Scene exceeded vertex limit ({telemetry['totalVertices']} > {MAX_VERTICES_LIMIT})"
+    telemetry["execError"] = exec_error
+    if exec_error:
+        telemetry["glbBytes"] = 0
+        out_telemetry_path.write_text(json.dumps(telemetry, indent=2), encoding="utf-8")
+        raise RuntimeError(exec_error)
+
 
     header = [
         "# ============================================================================",
@@ -426,17 +442,28 @@ def main():
     ]
     out_script_path.write_text("\n".join(header), encoding="utf-8")
 
-    out_glb_path.parent.mkdir(parents=True, exist_ok=True)
-    bpy.ops.export_scene.gltf(
-        filepath=str(out_glb_path),
-        export_format="GLB",
-        export_yup=True,
-        export_apply=True,
-    )
-    telemetry["glbBytes"] = out_glb_path.stat().st_size if out_glb_path.exists() else 0
+    temporary_glb = out_glb_path.with_name(out_glb_path.stem + ".pending.glb")
+    try:
+        bpy.ops.export_scene.gltf(
+            filepath=str(temporary_glb),
+            export_format="GLB",
+            export_yup=True,
+            export_apply=True,
+        )
+        if not temporary_glb.exists() or temporary_glb.stat().st_size <= 20:
+            raise RuntimeError("Blender did not produce a complete GLB")
+        os.replace(temporary_glb, out_glb_path)
+    finally:
+        if temporary_glb.exists():
+            temporary_glb.unlink()
+    telemetry["glbBytes"] = out_glb_path.stat().st_size
     out_telemetry_path.write_text(json.dumps(telemetry, indent=2), encoding="utf-8")
     print(f"[BlenderToolchain] Exported {out_glb_path.name} ({telemetry['glbBytes']} bytes, {telemetry['objectCount']} objects, {telemetry['totalTriangles']} tris)")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)

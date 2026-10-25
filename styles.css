@@ -1602,3 +1602,10 @@ textarea.code-editor {
 #historyNavigator button.selected { color:#efdab1; border-color:#c7ab70; background:#c7ab701a; }
 #historyNavigator small { color:#a3acb9; padding-left:16px; }
 @media(max-width:700px) { #historyNavigator { top:80px; max-width:185px; max-height:22vh; } }
+
+.demo-launch { border:1px solid #c7ab70; background:#c7ab7022; color:#f1d5a0; border-radius:20px; padding:7px 12px; cursor:pointer; white-space:nowrap; font:inherit; font-size:11px; }
+.demo-launch:disabled { opacity:.5; cursor:wait; }
+
+/* Ancestry and the history list share the same corner; show one inspector at a time. */
+body:has(#causalAncestryPopover[style*="display: flex"]) #historyNavigator { display:none; }
+#historyNavigator button:disabled { opacity:.6; cursor:wait; }
