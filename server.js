@@ -3,6 +3,8 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { validateBlenderResult } = require('./blender-result');
+const { planFork } = require('./demo-worlds');
 const { execSync, exec } = require('child_process');
 
 const PORT = process.env.PORT || 3456;
@@ -44,7 +46,7 @@ function prepareMvp3BlenderJob(specObj, prefix) {
     telPath,
     fullSpec: { ...specObj, textures: DEFAULT_TEXTURES },
     isCached: fs.existsSync(glbPath) && fs.existsSync(pyPath) && fs.existsSync(telPath),
-    cmd: `"${BLENDER_BIN}" --background --factory-startup --python "${BLENDER_SCRIPT_MVP3}" -- "${specPath}" "${glbPath}" "${pyPath}" "${telPath}"`,
+    cmd: `"${BLENDER_BIN}" --background --factory-startup --threads 2 --python-exit-code 1 --python "${BLENDER_SCRIPT_MVP3}" -- "${specPath}" "${glbPath}" "${pyPath}" "${telPath}"`,
   };
 }
 
@@ -55,6 +57,7 @@ function readMvp3BlenderResult(job, cached) {
       telemetry = JSON.parse(fs.readFileSync(job.telPath, 'utf8'));
     } catch (_) {}
   }
+  validateBlenderResult(job.glbPath, telemetry);
   return {
     glbUrl: `/.cache/${job.glbFilename}`,
     pythonScript: fs.existsSync(job.pyPath) ? fs.readFileSync(job.pyPath, 'utf8') : '',
@@ -66,7 +69,9 @@ function readMvp3BlenderResult(job, cached) {
 
 function runBlenderMvp3Toolchain(specObj, prefix = 'mvp3_blender') {
   const job = prepareMvp3BlenderJob(specObj, prefix);
-  if (job.isCached) return readMvp3BlenderResult(job, true);
+  if (job.isCached) {
+    try { return readMvp3BlenderResult(job, true); } catch (_) { /* Rebuild invalid historical caches. */ }
+  }
 
   fs.writeFileSync(job.specPath, JSON.stringify(job.fullSpec, null, 2));
   execSync(job.cmd, { stdio: 'pipe', timeout: 45000 });
@@ -77,13 +82,15 @@ function runBlenderMvp3Toolchain(specObj, prefix = 'mvp3_blender') {
 // progress events while Blender compiles an era.
 function runBlenderMvp3ToolchainAsync(specObj, prefix = 'mvp3_blender') {
   const job = prepareMvp3BlenderJob(specObj, prefix);
-  if (job.isCached) return Promise.resolve(readMvp3BlenderResult(job, true));
+  if (job.isCached) {
+    try { return Promise.resolve(readMvp3BlenderResult(job, true)); } catch (_) { /* Rebuild invalid historical caches. */ }
+  }
 
   fs.writeFileSync(job.specPath, JSON.stringify(job.fullSpec, null, 2));
   return new Promise((resolve, reject) => {
     exec(job.cmd, { timeout: 45000, maxBuffer: 64 * 1024 * 1024 }, (err) => {
       if (err) return reject(err);
-      resolve(readMvp3BlenderResult(job, false));
+      try { resolve(readMvp3BlenderResult(job, false)); } catch (failure) { reject(failure); }
     });
   });
 }
@@ -483,7 +490,7 @@ async function runMvp3CausalSimulation(body, emit = () => {}, { asyncBlender = f
           : runBlenderMvp3Toolchain(spec, `mvp3_era_${era.year}`);
         totalBlenderMs += bOut.blenderLatencyMs || 0;
       } catch (e) {
-        console.error(`[MVP3 Era ${era.year} Blender Error]`, e.message);
+        throw new Error(`Era ${era.year} failed Blender compilation: ${e.message}`);
       }
       emit({
         phase: 'era_compiled',
@@ -624,6 +631,22 @@ const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
   const pathname = parsedUrl.pathname;
 
+  if (req.method === 'POST' && pathname === '/api/demo/causal') {
+    try {
+      const body = await readJsonBody(req);
+      const simulation = planFork(body);
+      const started = Date.now();
+      const eras = [];
+      for (const era of simulation.eras) {
+        const result = await runBlenderMvp3ToolchainAsync({stage:'procedural_demo_v2', bpyCode:era.eraBpyCode,groundYThree:-1.72}, 'demo');
+        eras.push({...era,blenderGlbUrl:result.glbUrl,blenderTelemetry:result.telemetry,blenderLatencyMs:result.blenderLatencyMs,cached:result.cached});
+      }
+      return sendJson(res, 200, {ok:true,latencyMs:Date.now()-started,causalSimulation:{...simulation,eras}});
+    } catch (err) {
+      return sendJson(res,err.status||500,{ok:false,exactApiError:{message:err.message}});
+    }
+  }
+
   if (req.method === 'GET' && pathname === '/api/status') {
     try {
       let auth = null;
@@ -634,6 +657,8 @@ const server = http.createServer(async (req, res) => {
         model: MODEL_ID,
         project: auth?.project || null,
         liveGenerationAvailable: Boolean(auth),
+        proceduralDemoAvailable: true,
+        proceduralDemoBackend: 'CPU Blender; no AI inference',
         geometryBackend: 'MoGe-2 (microsoft/MoGe via api.ai3d.dev/v2)',
         authoringBackend: 'Unrestricted Scene-Specific Headless Blender 4.1 (bpy -> GLB) + Nano Banana PBR',
         endpoint: `https://aiplatform.googleapis.com/v1/projects/${auth?.project || "unconfigured"}/locations/global/publishers/google/models/${MODEL_ID}:generateContent`,
