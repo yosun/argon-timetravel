@@ -1,0 +1,40 @@
+const {chromium}=require('playwright');
+(async()=>{
+ const browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox','--enable-unsafe-swiftshader']});
+ const page=await browser.newPage({viewport:{width:1440,height:1000}});
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('http://127.0.0.1:3456');
+ await page.waitForFunction(()=>typeof proceduralGroup!=='undefined' && proceduralGroup.children.length>0);
+ console.log('startup',await page.evaluate(()=>({objects:proceduralGroup.children[0].children.length,history:state.activeBranchKey})));
+ await page.evaluate(()=>jumpToKeyframe(1800));
+ console.log('intermediate',await page.evaluate(()=>({stage:state.activeStage,year:state.activeYear,objects:proceduralGroup.children.length})));
+ await page.evaluate(()=>Promise.all([jumpToKeyframe(1206),jumpToKeyframe(1938),jumpToKeyframe(2026)]));
+ console.log('navigation',await page.evaluate(()=>({year:state.activeYear,worlds:proceduralGroup.children.length})));
+ const result = await page.evaluate(async()=>{
+   const manifest=await (await fetch('/samples/worlds/manifest.json')).json();
+   state.round2={rewrittenBpyCode:'baseline source'};
+   executeCinematicReturnToPresent=async()=>{};
+   saveMilestoneToGallery=async()=>{};
+   const nativeFetch=window.fetch;
+   window.fetch=async(url,options)=>{
+     if(url==='/api/argon/mvp3-causal-stream') return new Response(JSON.stringify({phase:'done',payload:{ok:true,causalSimulation:{branchTitle:'Test intervention',eras:manifest.eras.map(e=>({...e,eraBpyCode:'parent world source'}))}}})+'\n');
+     return nativeFetch(url,options);
+   };
+   await jumpToKeyframe(1566);
+   await step5RunMultiEpochCausalSimulation('Test first fork');
+   const first=state.activeBranchKey;
+   await jumpToKeyframe(1938);
+   await step5RunMultiEpochCausalSimulation('Test nested fork');
+   const second=state.activeBranchKey;
+   window.fetch=nativeFetch;
+   return {first,second,parent:state.branches[second].parentId,forkYear:state.branches[second].forkYear,count:Object.keys(state.branches).length,inherited:state.branches[second].eras.find(e=>e.year===1566).eraBpyCode};
+ });
+ if(result.count!==3 || result.parent!==result.first || result.forkYear!==1938 || result.inherited!=='parent world source') throw new Error(JSON.stringify(result));
+ console.log('Mocked causal integration passed',result);
+ await page.reload();
+ await page.waitForFunction(()=>Object.keys(state.branches).length===3 && proceduralGroup.children.length>0);
+ console.log('History reload persistence passed');
+ await page.screenshot({path:'/tmp/cloud-workbench.png'});
+ console.log('pageErrors',errors); if(errors.length) process.exitCode=1;
+ await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});

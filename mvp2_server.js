@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3456;
 const DEPTH_SERVICE_PORT = 3457;
 const MODEL_ID = 'gemini-4-argon';
 const CACHE_DIR = path.join(__dirname, '.cache');
-const BLENDER_BIN = '/Applications/Blender.app/Contents/MacOS/Blender';
+const BLENDER_BIN = process.env.BLENDER_PATH || (process.platform === 'darwin' ? '/Applications/Blender.app/Contents/MacOS/Blender' : 'blender');
 const BLENDER_SCRIPT = path.join(__dirname, 'blender_toolchain.py');
 
 if (!fs.existsSync(CACHE_DIR)) {

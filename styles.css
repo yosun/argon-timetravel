@@ -1596,3 +1596,9 @@ textarea.code-editor {
   .btn-return-present-hero { padding: 6px 14px; font-size: 11px; }
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+#historyNavigator { position:fixed; top:80px; right:22px; z-index:35; display:flex; flex-direction:column; gap:6px; max-height:34vh; max-width:290px; overflow:auto; padding:12px; border:1px solid #ffffff26; border-radius:14px; background:#10151bd9; backdrop-filter:blur(16px); }
+#historyNavigator button { color:#bfc8d4; background:transparent; border:1px solid #ffffff22; border-radius:8px; padding:9px 12px; text-align:left; cursor:pointer; }
+#historyNavigator button.selected { color:#efdab1; border-color:#c7ab70; background:#c7ab701a; }
+#historyNavigator small { color:#a3acb9; padding-left:16px; }
+@media(max-width:700px) { #historyNavigator { top:80px; max-width:185px; max-height:22vh; } }

@@ -1,0 +1,25 @@
+{
+  "provenance": "Procedural illustrative demo, not AI reconstruction",
+  "eras": [
+    {
+      "year": 1206,
+      "eraTitle": "1206 illustrative courtyard",
+      "blenderGlbUrl": "/samples/worlds/1206.glb"
+    },
+    {
+      "year": 1566,
+      "eraTitle": "1566 illustrative courtyard",
+      "blenderGlbUrl": "/samples/worlds/1566.glb"
+    },
+    {
+      "year": 1938,
+      "eraTitle": "1938 illustrative courtyard",
+      "blenderGlbUrl": "/samples/worlds/1938.glb"
+    },
+    {
+      "year": 2026,
+      "eraTitle": "2026 illustrative courtyard",
+      "blenderGlbUrl": "/samples/worlds/2026.glb"
+    }
+  ]
+}

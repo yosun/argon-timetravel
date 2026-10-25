@@ -41,7 +41,7 @@ const state = {
   // Step 5: Multi-Epoch Causal Simulation & Branching World States
   causalSimulation: null,
   branches: {}, // Preserves { orig, branchA, branchB }
-  activeBranchKey: 'branchA',
+  activeBranchKey: 'orig',
   selected3DObject: null,
   eraRenders: {},
 
@@ -306,6 +306,7 @@ function initApp() {
   loadSelectedSample(dom.sampleSelect ? dom.sampleSelect.value : 'samples/cloister_courtyard.jpg');
   setupTimelineScrubber();
   animateLoop();
+  loadDemoHistory().catch(err => showApiError(err.message));
 }
 
 async function checkBackendStatus() {
@@ -843,29 +844,25 @@ function clearProceduralGroup() {
   }
 }
 
-function loadBlenderGlbIntoScene(glbUrl) {
-  return new Promise((resolve) => {
-    clearProceduralGroup();
-    if (!glbUrl || typeof THREE.GLTFLoader !== 'function') {
-      return resolve(false);
-    }
-    const loader = new THREE.GLTFLoader();
-    loader.load(
-      glbUrl,
-      (gltf) => {
-        if (gltf && gltf.scene) {
-          proceduralGroup.add(gltf.scene);
-        }
-        renderer.render(scene, camera);
-        resolve(true);
-      },
-      undefined,
-      (err) => {
-        console.warn('[GLTFLoader Warning]', err);
-        resolve(false);
-      }
-    );
+function disposeWorld(world) {
+  world.traverse(obj => {
+    obj.geometry?.dispose();
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    materials.filter(Boolean).forEach(m => { Object.values(m).forEach(v => { if (v?.isTexture) v.dispose(); }); m.dispose(); });
   });
+}
+const navigateWorld = WorldNavigation.createNavigator(
+  url => new Promise((resolve, reject) => new THREE.GLTFLoader().load(url, g => resolve(g.scene), undefined, reject)),
+  world => {
+    [...proceduralGroup.children].forEach(child => { proceduralGroup.remove(child); disposeWorld(child); });
+    proceduralGroup.add(world);
+    renderer.render(scene, camera);
+  }, disposeWorld
+);
+async function loadBlenderGlbIntoScene(url) {
+  const ok = await navigateWorld(url);
+  if (!ok) console.info('World unchanged: load failed or superseded', url);
+  return ok;
 }
 
 function applyPhotoGrading(sepiaStrength = 0, warmth = 0) {
@@ -1070,6 +1067,8 @@ async function jumpToKeyframe(year) {
  * Synchronizes the actual 3D world (Blender GLB meshes & grading) and Hero Era overlay to a year
  */
 async function syncWorldToYear(year) {
+  const requestedYear = year;
+  year = CausalHistory.eraAt(KEYFRAME_YEARS.map(year => ({year})), year).year;
   let stageKey = 'alt2026';
   if (year === 1206) stageKey = 'era1206';
   else if (year === 1566) stageKey = 'era1566';
@@ -1086,7 +1085,7 @@ async function syncWorldToYear(year) {
   }
 
   // Update Hero Era Watermark typography
-  if (dom.heroYearNumber) dom.heroYearNumber.textContent = String(year);
+  if (dom.heroYearNumber) dom.heroYearNumber.textContent = String(requestedYear);
 
   const eraDescriptions = {
     1206: {
@@ -1122,23 +1121,19 @@ async function syncWorldToYear(year) {
   if (dom.heroEraName) dom.heroEraName.textContent = info.title;
   if (dom.heroEraProvenance) dom.heroEraProvenance.textContent = info.provenance;
 
+  if (state.activeBranchKey === 'orig') {
+    if (dom.heroYearSuffix) dom.heroYearSuffix.textContent = 'ILLUSTRATIVE DEMONSTRATION';
+    if (dom.heroEraName) dom.heroEraName.textContent = `${requestedYear} · PROCEDURAL COURTYARD`;
+    if (dom.heroEraProvenance) dom.heroEraProvenance.textContent = `Showing the ${year} illustrative world. Generate a reconstruction to use measured photograph geometry. No critic score has been independently verified.`;
+  }
+
   // Apply actual 3D GLB architecture & photo grading
-  if (state.activeBranchKey === 'orig' || !state.causalSimulation?.eras) {
-    if (year === 1206 || year === 1566) {
-      applyPhotoGrading(year === 1206 ? 0.30 : 0.18, 0.15);
-      await loadBlenderGlbIntoScene('/.cache/mvp3_orig_1206_a290c3541bd6cc3d9a0d.glb');
-    } else if (state.round2) {
-      applyPhotoGrading(year === 1938 ? 0.08 : 0, 0.04);
-      await loadBlenderGlbIntoScene(state.round2.blenderGlbUrl);
-    }
-  } else if (state.causalSimulation?.eras) {
-    const eras = state.causalSimulation.eras;
-    const idx = year === 1206 ? 0 : year === 1566 ? 1 : year === 1938 ? 2 : 3;
-    const era = eras[Math.min(idx, eras.length - 1)];
-    if (era) {
-      applyPhotoGrading(era.grading?.sepiaStrength || 0, era.grading?.warmth || 0);
-      await loadBlenderGlbIntoScene(era.blenderGlbUrl);
-    }
+  const era = CausalHistory.eraAt(state.branches[state.activeBranchKey]?.eras || [], requestedYear);
+  if (era) {
+    applyPhotoGrading(era.grading?.sepiaStrength || 0, era.grading?.warmth || 0);
+    await loadBlenderGlbIntoScene(era.blenderGlbUrl);
+  } else if (state.round2) {
+    await loadBlenderGlbIntoScene(state.round2.blenderGlbUrl);
   }
 
   renderer.render(scene, camera);
@@ -1237,6 +1232,8 @@ async function switchTimelineBranch(branchKey) {
   state.activeBranchKey = branchKey;
   syncBranchButtons();
 
+  state.causalSimulation = state.branches[branchKey] || null;
+  renderHistoryNavigator();
   if (branchKey === 'orig') {
     showToast('Switched to Branch 0: Original Unaltered History');
     await jumpToKeyframe(2026);
@@ -1559,6 +1556,15 @@ async function step4RewriteAndRerenderRound2() {
   }
 
   state.round2 = data.round2;
+  const reconstructionId = crypto.randomUUID();
+  state.branches[reconstructionId] = CausalHistory.freeze({
+    id: reconstructionId, parentId: null, forkYear: null,
+    branchTitle: 'Reconstructed present',
+    eras: [{ year: 2026, eraBpyCode: data.round2.rewrittenBpyCode, blenderGlbUrl: data.round2.blenderGlbUrl }]
+  });
+  state.activeBranchKey = reconstructionId;
+  state.causalSimulation = state.branches[reconstructionId];
+  renderHistoryNavigator();
   state.latencies.rewriteR2Ms = data.latencyMs || 0;
   state.latencies.blenderR2Ms = data.round2.blenderLatencyMs || 0;
 
@@ -1601,8 +1607,8 @@ async function step4RewriteAndRerenderRound2() {
   renderCriticInspector();
   updateMetricsDisplay();
 
-  const r1Score = state.critiqueR1?.overallRatingOutOf10 ?? 7.2;
-  const r2Score = state.critiqueR2?.overallRatingOutOf10 ?? 9.3;
+  const r1Score = state.critiqueR1?.overallRatingOutOf10 ?? 'unavailable';
+  const r2Score = state.critiqueR2?.overallRatingOutOf10 ?? 'unavailable';
 
   addCallLog({
     stage: 'Step 4: Closed-Loop Rewrite (Round 2)',
@@ -1613,14 +1619,20 @@ async function step4RewriteAndRerenderRound2() {
   });
 
   if (dom.btnStep5Causal) dom.btnStep5Causal.disabled = false;
-  setStatus('ok', `Step 4 Complete: Verification Passed (${r1Score} → ${r2Score}/10)`);
+  setStatus('ok', `Step 4 Complete: Critic scores (${r1Score} → ${r2Score}/10)`);
 }
 
 /**
  * Step 5: Multi-Epoch Causal Simulation with live streaming progress
  */
 async function step5RunMultiEpochCausalSimulation(customIntervention) {
-  if (!state.round2) await step4RewriteAndRerenderRound2();
+  let parentId = state.activeBranchKey;
+  const forkYear = state.activeYear;
+  const parentEra = CausalHistory.eraAt(state.branches[parentId]?.eras || [], forkYear);
+  if (!state.round2) {
+    await step4RewriteAndRerenderRound2();
+    if (!parentEra?.eraBpyCode) parentId = state.activeBranchKey;
+  }
 
   const interventionText =
     customIntervention ||
@@ -1642,8 +1654,8 @@ async function step5RunMultiEpochCausalSimulation(customIntervention) {
   try {
     const payloadBody = {
       originalImageDataUrl: state.photoDataUrl,
-      verifiedBpyCode: state.round2.rewrittenBpyCode,
-      interventionText,
+      verifiedBpyCode: parentEra?.eraBpyCode || state.round2.rewrittenBpyCode,
+      interventionText: `Fork from ${forkYear}. Parent history: ${JSON.stringify(state.branches[parentId]?.causalChainSummary || "Original baseline")}. Preserve all pre-fork history. ${interventionText}`,
       metricSummary: state.metricSummary,
       thinkingLevel: dom.thinkingLevelSelect ? dom.thinkingLevelSelect.value : 'MEDIUM',
     };
@@ -1707,9 +1719,13 @@ async function step5RunMultiEpochCausalSimulation(customIntervention) {
     state.causalSimulation = causalData.causalSimulation;
     state.latencies.causalMs = causalData.latencyMs || 0;
 
-    const branchKey = interventionText.includes('1566') ? 'branchB' : 'branchA';
+    const branchKey = crypto.randomUUID();
+    state.branches[branchKey] = CausalHistory.fork(state.branches, parentId, forkYear, causalData.causalSimulation, branchKey);
     state.activeBranchKey = branchKey;
-    state.branches[branchKey] = causalData.causalSimulation;
+    try { localStorage.setItem('timetravel.histories.v1', JSON.stringify(state.branches)); }
+    catch (_) { showToast('History retained in this session; browser storage is full.'); }
+    state.causalSimulation = state.branches[branchKey];
+    renderHistoryNavigator();
     syncBranchButtons();
 
     // Cache era screenshots for gallery
@@ -2281,3 +2297,38 @@ function animateLoop() {
 }
 
 window.addEventListener('DOMContentLoaded', initApp);
+
+function renderHistoryNavigator() {
+  let panel = document.getElementById('historyNavigator');
+  if (!panel) {
+    panel = document.createElement('nav'); panel.id = 'historyNavigator'; panel.setAttribute('aria-label', 'Causal histories'); document.body.append(panel);
+  }
+  panel.replaceChildren();
+  for (const branch of Object.values(state.branches)) {
+    const button = document.createElement('button');
+    button.className = branch.id === state.activeBranchKey ? 'selected' : '';
+    button.textContent = branch.id === 'orig' ? 'Original · illustrative world' : branch.parentId ? `${branch.branchTitle || 'Alternate history'} · fork ${branch.forkYear}` : branch.branchTitle;
+    button.title = branch.parentId ? `Parent: ${branch.parentId} · Fork: ${branch.forkYear}` : 'Root history · procedural demonstration, not an AI reconstruction';
+    button.onclick = () => switchTimelineBranch(branch.id);
+    panel.append(button);
+    if (branch.parentId) {
+      const relation = document.createElement('small'); relation.textContent = `↳ ${branch.parentId.slice(0,8)} → ${branch.forkYear}`; panel.append(relation);
+    }
+  }
+}
+async function loadDemoHistory() {
+  const response = await fetch('/samples/worlds/manifest.json');
+  if (!response.ok) throw new Error('Demo worlds missing: run bash scripts/setup-cloud.sh');
+  const manifest = await response.json();
+  state.branches.orig = CausalHistory.freeze({id:'orig', parentId:null, forkYear:null, eras:manifest.eras});
+  try {
+    const saved = JSON.parse(localStorage.getItem('timetravel.histories.v1') || '{}');
+    for (const [id, branch] of Object.entries(saved)) {
+      if (id !== 'orig' && branch.id === id && Array.isArray(branch.eras)) state.branches[id] = CausalHistory.freeze(branch);
+    }
+  } catch (_) { /* Unavailable or invalid local storage does not block startup. */ }
+  renderHistoryNavigator();
+  syncBranchButtons();
+  await syncWorldToYear(state.activeYear);
+  showToast('ILLUSTRATIVE 3D WORLD · Generate to reconstruct your photograph', 6000);
+}

@@ -11,7 +11,7 @@ const MODEL_ID = 'gemini-4-argon';
 const CACHE_DIR = path.join(__dirname, '.cache');
 const SAMPLES_DIR = path.join(__dirname, 'samples');
 const PROGRESS_JSON = path.join(CACHE_DIR, 'mvp3_progress_milestones.json');
-const BLENDER_BIN = '/Applications/Blender.app/Contents/MacOS/Blender';
+const BLENDER_BIN = process.env.BLENDER_PATH || (process.platform === 'darwin' ? '/Applications/Blender.app/Contents/MacOS/Blender' : 'blender');
 const BLENDER_SCRIPT_MVP3 = path.join(__dirname, 'blender_toolchain.py');
 const BLENDER_SCRIPT_MVP2 = path.join(__dirname, 'mvp2_blender_toolchain.py');
 
@@ -459,8 +459,10 @@ async function runMvp3CausalSimulation(body, emit = () => {}, { asyncBlender = f
   const groundYThree = Number(metricSummary.groundYThree ?? -1.72);
   const thinkingLevel = body.thinkingLevel || 'MEDIUM';
 
-  const cacheFile = getCacheKey('mvp3_causal_v1', {
-    origHead: origPhoto.slice(0, 300),
+  const cacheFile = getCacheKey('mvp3_causal_v2', {
+    imageHash: crypto.createHash('sha256').update(origPhoto).digest('hex'),
+    sourceHash: crypto.createHash('sha256').update(verifiedBpyCode).digest('hex'),
+    metricSummary,
     interventionText,
     thinkingLevel,
   });
@@ -624,15 +626,17 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && pathname === '/api/status') {
     try {
-      const auth = getGcloudAuth();
+      let auth = null;
+      try { auth = getGcloudAuth(); } catch (_) {}
       return sendJson(res, 200, {
         ok: true,
         milestone: 'MVP3: Autonomous 3D World Authoring, 4-View Adversarial Critic & Closed-Loop Code Rewrite',
         model: MODEL_ID,
-        project: auth.project,
+        project: auth?.project || null,
+        liveGenerationAvailable: Boolean(auth),
         geometryBackend: 'MoGe-2 (microsoft/MoGe via api.ai3d.dev/v2)',
         authoringBackend: 'Unrestricted Scene-Specific Headless Blender 4.1 (bpy -> GLB) + Nano Banana PBR',
-        endpoint: `https://aiplatform.googleapis.com/v1/projects/${auth.project}/locations/global/publishers/google/models/${MODEL_ID}:generateContent`,
+        endpoint: `https://aiplatform.googleapis.com/v1/projects/${auth?.project || "unconfigured"}/locations/global/publishers/google/models/${MODEL_ID}:generateContent`,
       });
     } catch (err) {
       return sendJson(res, 500, {

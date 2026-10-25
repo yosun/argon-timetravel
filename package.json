@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "depth-service": "python3 depth_service.py"
+    "depth-service": "python3 depth_service.py",
+    "test": "node --test tests/*.test.js",
+    "setup:cloud": "bash scripts/setup-cloud.sh"
   },
   "keywords": [
     "gemini",
