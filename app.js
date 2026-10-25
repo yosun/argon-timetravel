@@ -1229,6 +1229,13 @@ function syncBranchButtons() {
 }
 
 async function switchTimelineBranch(branchKey) {
+  if (!state.branches[branchKey] && branchKey !== 'orig') {
+    const prompt = branchKey === 'branchB'
+      ? 'In 1566, install an ornate marble balustrade and bronze astrolabe sundial in the courtyard.'
+      : 'In 1206, construct a Gothic bronze-and-limestone lavabo fountain canopy over the central wellhead.';
+    await step5RunMultiEpochCausalSimulation(prompt);
+    return;
+  }
   state.activeBranchKey = branchKey;
   syncBranchButtons();
 
