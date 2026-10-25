@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MVP2: Autonomous World Authoring and Causal Verification — Gemini 4 Argon</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="vendor/three.min.js"></script>
+  <script src="vendor/GLTFLoader.js"></script>
+</head>
+<body>
+  <!-- Top Header Bar -->
+  <header class="top-bar">
+    <div class="brand">
+      <span class="badge-model">gemini-4-argon</span>
+      <span class="badge-moge">MoGe-2 3D API</span>
+      <span class="badge-moge" style="background:linear-gradient(135deg,#d97706,#ea580c);">Blender 4.1 bpy → GLB</span>
+      <h1>MVP2: Autonomous World Authoring and Causal Verification</h1>
+    </div>
+
+    <div class="controls-bar">
+      <label class="file-upload-btn" title="Acceptance Test Step 1: Upload a photograph">
+        <span>1. Upload Photo</span>
+        <input type="file" id="photoInput" accept="image/*" />
+      </label>
+      <button id="btnLoadSample" class="btn btn-secondary" title="Load sample living room photograph">Sample: Living Room</button>
+      <button id="btnLoadSampleDining" class="btn btn-secondary" title="Load sample dining room photograph">Sample: Dining Room</button>
+
+      <div class="select-group" title="Gemini 4 Argon Thinking Level">
+        <label for="thinkingLevelSelect">Thinking:</label>
+        <select id="thinkingLevelSelect">
+          <option value="LOW" selected>LOW (Fast)</option>
+          <option value="MEDIUM">MEDIUM</option>
+          <option value="HIGH">HIGH</option>
+        </select>
+      </div>
+
+      <div class="divider"></div>
+
+      <button id="btnRunDemoLoop" class="btn btn-primary">▶ Run All 9 Acceptance Test Steps</button>
+      <a href="/mvp1.html" class="btn btn-secondary" style="text-decoration:none;">MVP1 Archive</a>
+    </div>
+  </header>
+
+  <!-- API Error Banner -->
+  <div id="apiErrorBanner" class="api-error-banner" style="display: none;">
+    <div class="error-header">
+      <strong>Exact API Error Report (No Silent Model Substitution)</strong>
+      <button id="btnDismissError" class="btn btn-small">Dismiss</button>
+    </div>
+    <pre id="apiErrorText"></pre>
+  </div>
+
+  <!-- 9-Step Interactive Acceptance Test Strip -->
+  <div class="status-strip">
+    <div class="workflow-steps" id="acceptanceStepStrip">
+      <button id="wfStep1" class="wf-pill active" data-step="1" title="Step 1: Upload a photograph">1. Upload Photo</button>
+      <span class="wf-arrow">→</span>
+      <button id="wfStep2" class="wf-pill" data-step="2" title="Step 2: Reconstruct its geometry with MoGe">2. MoGe 3D Geometry</button>
+      <span class="wf-arrow">→</span>
+      <button id="wfStep3" class="wf-pill" data-step="3" title="Step 3: Ask Argon to generate a historical environment using Blender">3. Argon+Blender 1926</button>
+      <span class="wf-arrow">→</span>
+      <button id="wfStep4" class="wf-pill" data-step="4" title="Step 4: Render and inspect the environment">4. Render &amp; Inspect</button>
+      <span class="wf-arrow">→</span>
+      <button id="wfStep5" class="wf-pill" data-step="5" title="Step 5: Make one historical intervention">5. Intervene (1926)</button>
+      <span class="wf-arrow">→</span>
+      <button id="wfStep6" class="wf-pill" data-step="6" title="Step 6: Propagate its consequences through at least two intermediate historical states (1956 & 1986)">6. Propagate (1956→1986)</button>
+      <span class="wf-arrow">→</span>
+      <button id="wfStep7" class="wf-pill" data-step="7" title="Step 7: Generate the alternate present (2026)">7. Alternate Present</button>
+      <span class="wf-arrow">→</span>
+      <button id="wfStep8" class="wf-pill" data-step="8" title="Step 8: Return to the original camera [0,0,0]">8. Original Camera</button>
+      <span class="wf-arrow">→</span>
+      <button id="wfStep9" class="wf-pill" data-step="9" title="Step 9: Have Argon identify and fix one real geometric or causal inconsistency">9. Identify &amp; Fix Inconsistency</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="statusBadge" class="status-pill status-idle">Idle — Ready for 9-Step Acceptance Test</span>
+      <span id="modelMetaInfo" class="model-meta">Vertex AI (`crueltycam`) | `gemini-4-argon` + `MoGe-2` + `Blender 4.1`</span>
+    </div>
+  </div>
+
+  <!-- Main Workbench Grid -->
+  <main class="workbench-grid">
+    <!-- Left Column: Interactive 3D Viewport + Multi-State Time Travel Deck + 6-Slot Visual Verification Strip -->
+    <div class="left-col">
+      <section class="card">
+        <div class="card-header">
+          <div class="title-group">
+            <h2>Interactive 3D World Viewport</h2>
+            <span id="activeStageLabel" class="stage-badge">Stage: Present (2026)</span>
+          </div>
+
+          <div class="viewport-toolbar">
+            <div class="stage-switcher" id="stageSwitcher">
+              <button data-stage="present2026" class="btn-chip active" title="Original 2026 Photograph on MoGe-2 3D Mesh">Orig 2026</button>
+              <button data-stage="displaced" class="btn-chip" title="Displaced Camera (+0.35m) to inspect 3D Parallax">Inspect (+0.35m)</button>
+              <button data-stage="past1926" class="btn-chip" title="Step 3 & 4: 1926 Historical Environment generated with Blender">1926 (Blender)</button>
+              <button data-stage="state1956" class="btn-chip" title="Step 6A: Intermediate Historical State 1 (1956 Postwar Adaptation)">1956 (Int. 1)</button>
+              <button data-stage="state1986" class="btn-chip" title="Step 6B: Intermediate Historical State 2 (1986 Heritage Preservation)">1986 (Int. 2)</button>
+              <button data-stage="alternate2026_initial" class="btn-chip" title="Step 7: Initial Alternate Present (Pre-Fix with Real Geometric/Causal Inconsistency)">Alt 2026 (Pre-Fix)</button>
+              <button data-stage="alternate2026" class="btn-chip" title="Step 9: Repaired Alternate Present (Post-Argon Geometric & Causal Fix)">Alt 2026 (Fixed)</button>
+            </div>
+
+            <button id="btnResetCamera" class="btn-chip btn-accent" title="Step 8: Return to exact calibrated original camera viewpoint [0,0,0]">Original Cam [0,0,0]</button>
+            <button id="btnDisplaceCamera" class="btn-chip" title="Step 4: Translate camera +0.35m right to inspect 3D environment & parallax">Inspect 3D (+0.35m)</button>
+
+            <label class="toggle-chip" title="Toggle interactive split wipe comparison: ORIGINAL 2026 | ALTERNATE 2026">
+              <input type="checkbox" id="toggleSplitSlider" />
+              <span>Split: ORIG | ALT</span>
+            </label>
+            <label class="toggle-chip" title="Show MoGe-2 3D triangle mesh wireframe">
+              <input type="checkbox" id="toggleWireframe" />
+              <span>3D Wireframe</span>
+            </label>
+            <label class="toggle-chip" title="Highlight causally modified objects and detected geometric inconsistencies">
+              <input type="checkbox" id="toggleAffectedHighlights" checked />
+              <span>3D Highlights</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 3D Viewport Container -->
+        <div class="viewport-container" id="viewportContainer">
+          <canvas id="threeCanvas"></canvas>
+
+          <!-- Interactive Split Comparison Overlay (ORIGINAL 2026 | ALTERNATE 2026) -->
+          <div id="splitCompareOverlay" class="split-compare-overlay" style="display: none;">
+            <div id="splitLeftClip" class="split-left-clip">
+              <img id="splitOriginalImg" alt="Original 2026 View" />
+              <div class="split-badge split-badge-left">ORIGINAL 2026 (Baseline)</div>
+            </div>
+            <div id="splitRightBadge" class="split-badge split-badge-right">ALTERNATE 2026 (Counterfactual)</div>
+            <div id="splitDividerLine" class="split-divider-line">
+              <div class="split-handle">⇄</div>
+            </div>
+            <input type="range" id="splitSliderInput" class="split-slider-input" min="0" max="100" value="50" />
+          </div>
+
+          <!-- Top-Left Telemetry HUD -->
+          <div class="hud-top-left">
+            <div id="hudCameraPose">Cam: [0.00, 0.00, 0.00] | FOV: 43.3°</div>
+            <div id="hudGeometryInfo">
+              <span class="obs-dot">●</span> MoGe-2 Metric 3D Mesh | <span class="inf-dot">●</span> Blender 4.1 GLB + Argon
+            </div>
+            <div id="hudTimelineState">Year: 2026 | Branch: baseline_2026</div>
+          </div>
+
+          <!-- Inconsistency Status Banner Inside Viewport (Visible during Step 7 Pre-Fix & Step 9 Post-Fix) -->
+          <div id="viewportInconsistencyBanner" class="viewport-inconsistency-banner" style="display: none;"></div>
+
+          <!-- Selected Object Causal & Geometric Callout -->
+          <div id="causalCallout" class="causal-callout" style="display: none;">
+            <div class="callout-header">
+              <strong id="calloutTitle">Object 3D &amp; Causal Trace</strong>
+              <button id="btnCloseCallout" class="btn-close">✕</button>
+            </div>
+            <div id="calloutBody" class="callout-body"></div>
+            <div id="calloutProvenance" class="callout-prov"></div>
+          </div>
+
+          <!-- Bottom Navigation Controls -->
+          <div class="hud-bottom-controls">
+            <div class="nav-dpad">
+              <button data-move="forward" title="Move Forward (W)">W ↑</button>
+              <button data-move="left" title="Strafe Left (A)">← A</button>
+              <button data-move="back" title="Move Back (S)">S ↓</button>
+              <button data-move="right" title="Strafe Right (D)">D →</button>
+              <button data-move="up" title="Move Up (E)">Up</button>
+              <button data-move="down" title="Move Down (Q)">Down</button>
+            </div>
+            <div class="nav-hint">Drag to Orbit • Scroll to Zoom • Click Any 3D Object for Causal &amp; Geometric Trace</div>
+          </div>
+        </div>
+
+        <!-- Multi-State Time Travel & Counterfactual Intervention Deck -->
+        <div class="timetravel-deck">
+          <div class="timeline-row">
+            <div class="timeline-label">
+              <strong>CAUSAL TIMELINE:</strong>
+              <span id="timelineYearLabel" class="year-readout">2026</span>
+              <span id="timelineBranchBadge" class="branch-badge">Branch: baseline_2026</span>
+            </div>
+            <div class="timeline-era-buttons" id="eraQuickButtons">
+              <button class="era-btn" data-era-stage="past1926" data-year="1926">1926 (Intervention)</button>
+              <span class="wf-arrow">→</span>
+              <button class="era-btn" data-era-stage="state1956" data-year="1956">1956 (Interm. State 1)</button>
+              <span class="wf-arrow">→</span>
+              <button class="era-btn" data-era-stage="state1986" data-year="1986">1986 (Interm. State 2)</button>
+              <span class="wf-arrow">→</span>
+              <button class="era-btn" data-era-stage="alternate2026_initial" data-year="2026">2026 (Step 7 Pre-Fix)</button>
+              <span class="wf-arrow">→</span>
+              <button class="era-btn" data-era-stage="alternate2026" data-year="2026">2026 (Step 9 Repaired)</button>
+            </div>
+          </div>
+
+          <div class="intervention-row">
+            <div class="intervention-input-group">
+              <input
+                type="text"
+                id="interventionInput"
+                placeholder="Enter a 1926 historical intervention (e.g., In 1926, install dark walnut picture-frame wall molding and a tufted leather club chair)..."
+              />
+              <button id="btnApplyIntervention" class="btn btn-timetravel">⚡ Step 5–7: Intervene &amp; Propagate (1926→1956→1986→2026)</button>
+              <button id="btnRunVerifyFix" class="btn btn-present">🔧 Step 9: Argon Identify &amp; Fix Inconsistency</button>
+            </div>
+            <div class="suggested-chips" id="suggestedInterventionsBar">
+              <span class="chip-hint">Suggested 1926 Interventions:</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6-Slot Multi-Stage Visual Evidence Strip -->
+      <section class="card">
+        <div class="card-header">
+          <h2>Multi-Era Propagation &amp; Geometric/Causal Verification Strip (Steps 1–9 Evidence)</h2>
+          <span class="subtle-note">Click any slot to inspect in the main 3D viewport</span>
+        </div>
+        <div class="comparison-grid comparison-grid-6">
+          <!-- Slot 1: Original Photo (Step 1) -->
+          <div class="compare-slot" data-slot-stage="present2026">
+            <div class="slot-header">
+              <span>1. Photo (2026)</span>
+              <span id="origDimensions" class="slot-meta">—</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgOriginal" alt="Original Photograph" style="display: none;" />
+              <div id="emptyOriginal" class="empty-placeholder">Step 1: Upload Photo</div>
+            </div>
+          </div>
+
+          <!-- Slot 2: MoGe-2 Depth Map & 3D Geometry (Step 2) -->
+          <div class="compare-slot" data-slot-stage="displaced">
+            <div class="slot-header">
+              <span>2. MoGe-2 Depth</span>
+              <button id="btnToggleMaskView" class="btn-chip" style="padding:0 4px;font-size:9px;" title="Toggle Depth Map / Validity Mask">Mask</button>
+              <span id="depthRangeMeta" class="slot-meta">Step 2</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgDepthMap" alt="MoGe-2 Depth Map" style="display: none;" />
+              <div id="emptyDepthMap" class="empty-placeholder">Step 2: MoGe-2</div>
+            </div>
+          </div>
+
+          <!-- Slot 3: 1926 Historical Blender Environment (Step 3 & 4) -->
+          <div class="compare-slot" data-slot-stage="past1926">
+            <div class="slot-header">
+              <span>3. 1926 Blender</span>
+              <button id="btnToggle1926InspectView" class="btn-chip" style="padding:0 4px;font-size:9px;" title="Toggle 1926 Original Cam vs Inspected +0.35m Render">Inspect</button>
+              <span id="hist1926Meta" class="slot-meta">Step 3–4</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgRender1926" alt="1926 Historical Blender Render" style="display: none;" />
+              <div id="emptyRender1926" class="empty-placeholder">Step 3: 1926 GLB</div>
+            </div>
+          </div>
+
+          <!-- Slot 4: Intermediate Historical States 1956 & 1986 (Step 6) -->
+          <div class="compare-slot" data-slot-stage="state1956">
+            <div class="slot-header">
+              <span id="slotIntermediateTitle">4. Interm: 1956</span>
+              <button id="btnToggleIntermediateYear" class="btn-chip" style="padding:0 4px;font-size:9px;" title="Switch between Intermediate State 1 (1956) and Intermediate State 2 (1986)">1956⇄1986</button>
+              <span id="intermMeta" class="slot-meta">Step 6</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgRenderIntermediate" alt="Intermediate Historical State Render" style="display: none;" />
+              <div id="emptyRenderIntermediate" class="empty-placeholder">Step 6: 1956 &amp; 1986</div>
+            </div>
+          </div>
+
+          <!-- Slot 5: Initial Alternate 2026 (Pre-Fix Step 7 — Shows Real Inconsistency) -->
+          <div class="compare-slot" data-slot-stage="alternate2026_initial">
+            <div class="slot-header">
+              <span>5. Alt 2026 (Pre-Fix)</span>
+              <span id="simAltInitialMeta" class="slot-meta" style="color:#fbbf24;">Step 7 (Collision)</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgRenderAltInitial" alt="Pre-Fix Alternate 2026 Render" style="display: none;" />
+              <div id="emptyRenderAltInitial" class="empty-placeholder">Step 7: Pre-Fix</div>
+            </div>
+          </div>
+
+          <!-- Slot 6: Repaired Alternate 2026 (Post-Fix Step 9 — Geometric & Causal Inconsistency Fixed) -->
+          <div class="compare-slot" data-slot-stage="alternate2026">
+            <div class="slot-header">
+              <span>6. Alt 2026 (Fixed)</span>
+              <span id="simAltMeta" class="slot-meta" style="color:#34d399;">Step 9 (Verified)</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgRenderAlternate" alt="Repaired Alternate 2026 Render" style="display: none;" />
+              <div id="emptyRenderAlternate" class="empty-placeholder">Step 9: Post-Fix</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Right Column: 9-Step Acceptance Checklist + Metrics + Tabbed Inspector -->
+    <div class="right-col">
+      <!-- MVP2 9-Step Acceptance Test Live Checklist -->
+      <section class="card">
+        <div class="card-header">
+          <h2>MVP2 Acceptance Test Checklist (9 Required Capabilities)</h2>
+          <span id="acceptanceProgressBadge" class="stage-badge">0 / 9 Passed</span>
+        </div>
+        <div class="acceptance-grid" id="acceptanceChecklistGrid">
+          <div class="acc-item" id="accItem1" data-step="1">
+            <span class="acc-num">1</span>
+            <div class="acc-text">
+              <strong>Upload a photograph</strong>
+              <span id="accMeta1" class="acc-meta">Awaiting photo upload</span>
+            </div>
+            <span id="accStatus1" class="acc-badge">PENDING</span>
+          </div>
+          <div class="acc-item" id="accItem2" data-step="2">
+            <span class="acc-num">2</span>
+            <div class="acc-text">
+              <strong>Reconstruct its geometry with MoGe</strong>
+              <span id="accMeta2" class="acc-meta">MoGe-2 metric point map &amp; intrinsics</span>
+            </div>
+            <span id="accStatus2" class="acc-badge">PENDING</span>
+          </div>
+          <div class="acc-item" id="accItem3" data-step="3">
+            <span class="acc-num">3</span>
+            <div class="acc-text">
+              <strong>Ask Argon to generate a historical environment using Blender</strong>
+              <span id="accMeta3" class="acc-meta">Argon 1926 spec → Headless Blender 4.1 GLB</span>
+            </div>
+            <span id="accStatus3" class="acc-badge">PENDING</span>
+          </div>
+          <div class="acc-item" id="accItem4" data-step="4">
+            <span class="acc-num">4</span>
+            <div class="acc-text">
+              <strong>Render and inspect the environment</strong>
+              <span id="accMeta4" class="acc-meta">Same-cam + Displaced (+0.35m) &amp; 3D Raycast</span>
+            </div>
+            <span id="accStatus4" class="acc-badge">PENDING</span>
+          </div>
+          <div class="acc-item" id="accItem5" data-step="5">
+            <span class="acc-num">5</span>
+            <div class="acc-text">
+              <strong>Make one historical intervention</strong>
+              <span id="accMeta5" class="acc-meta">Counterfactual intervention in 1926</span>
+            </div>
+            <span id="accStatus5" class="acc-badge">PENDING</span>
+          </div>
+          <div class="acc-item" id="accItem6" data-step="6">
+            <span class="acc-num">6</span>
+            <div class="acc-text">
+              <strong>Propagate consequences through ≥2 intermediate historical states</strong>
+              <span id="accMeta6" class="acc-meta">1926 → 1956 (State 1) → 1986 (State 2) Blender GLBs</span>
+            </div>
+            <span id="accStatus6" class="acc-badge">PENDING</span>
+          </div>
+          <div class="acc-item" id="accItem7" data-step="7">
+            <span class="acc-num">7</span>
+            <div class="acc-text">
+              <strong>Generate the alternate present</strong>
+              <span id="accMeta7" class="acc-meta">Synthesize Alternate 2026 3D WorldState &amp; GLB</span>
+            </div>
+            <span id="accStatus7" class="acc-badge">PENDING</span>
+          </div>
+          <div class="acc-item" id="accItem8" data-step="8">
+            <span class="acc-num">8</span>
+            <div class="acc-text">
+              <strong>Return to the original camera</strong>
+              <span id="accMeta8" class="acc-meta">Exact [0,0,0] registration &amp; Split Wipe</span>
+            </div>
+            <span id="accStatus8" class="acc-badge">PENDING</span>
+          </div>
+          <div class="acc-item" id="accItem9" data-step="9">
+            <span class="acc-num">9</span>
+            <div class="acc-text">
+              <strong>Have Argon identify &amp; fix one real geometric or causal inconsistency</strong>
+              <span id="accMeta9" class="acc-meta">Detect vase collision &amp; floating plinth → Re-run Blender fix</span>
+            </div>
+            <span id="accStatus9" class="acc-badge">PENDING</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6 Separate Evaluation Metrics -->
+      <section class="card">
+        <div class="card-header">
+          <h2>Evaluation &amp; Verification Telemetry (Before Fix → After Fix)</h2>
+          <span class="subtle-note">Quantifies MoGe-2 3D Geometry, Multi-Era Propagation &amp; Step 9 Repair</span>
+        </div>
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <span class="metric-label">1. Visual Fidelity (Same-Cam)</span>
+            <strong id="metricVisualFidelity" class="metric-value">—</strong>
+            <span id="metricVisualSub" class="metric-sub">PSNR / SSIM / Argon Pre→Post Fix</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">2. Spatial &amp; Geometric (3D)</span>
+            <strong id="metricSpatialConsistency" class="metric-value">—</strong>
+            <span id="metricSpatialSub" class="metric-sub">MoGe-2 Parallax &amp; Occlusion Repair</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">3. Causal Isolation</span>
+            <strong id="metricCausalConsistency" class="metric-value">—</strong>
+            <span id="metricCausalSub" class="metric-sub">Affected vs Preserved Structures</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">4. Multi-State Temporal</span>
+            <strong id="metricTemporalConsistency" class="metric-value">—</strong>
+            <span id="metricTemporalSub" class="metric-sub">1926 → 1956 → 1986 → 2026</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">5. Blender 4.1 &amp; Runtime</span>
+            <strong id="metricRuntimeCorrectness" class="metric-value">—</strong>
+            <span id="metricRuntimeSub" class="metric-sub">Headless bpy → GLB Compilation</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">6. Stage Latency Breakdown</span>
+            <strong id="metricLatencies" class="metric-value">—</strong>
+            <span id="metricLatencySub" class="metric-sub">MoGe-2 | Argon | Blender | Total</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tabbed Inspector: Step 9 Inconsistency Fix | Multi-State Causal Chain | WorldState & bpy | Logs -->
+      <section class="card">
+        <div class="tabs-header">
+          <button class="tab-btn active" data-tab="tabVerify">Step 9: Geometric &amp; Causal Repair</button>
+          <button class="tab-btn" data-tab="tabCausal">Step 6: Multi-State Causal Chain (1926→1956→1986→2026)</button>
+          <button class="tab-btn" data-tab="tabWorldState">Blender bpy &amp; WorldState JSON</button>
+          <button class="tab-btn" data-tab="tabLogs">Argon &amp; Tool Logs</button>
+        </div>
+
+        <!-- Tab 1: Autonomous Argon Inconsistency Detection & Repair (Step 9) -->
+        <div id="tabVerify" class="tab-panel">
+          <div id="discrepanciesList" class="discrepancies-list">
+            <div class="empty-state">
+              Run Step 9 (Identify &amp; Fix Inconsistency) or click "▶ Run All 9 Acceptance Test Steps" to see Argon detect and repair the real 3D geometric collision &amp; causal leak.
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Multi-State Causal Graph & Intermediate States (1926 -> 1956 -> 1986 -> 2026) -->
+        <div id="tabCausal" class="tab-panel" style="display: none;">
+          <div id="causalGraphContainer" class="causal-container">
+            <div class="empty-state">
+              Run Step 6 (Propagate 1956 → 1986) to inspect the intermediate historical states, causal transitions, and 3D object provenance.
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Persistent WorldState JSON & Executed Blender 4.1 Python Code -->
+        <div id="tabWorldState" class="tab-panel" style="display: none;">
+          <div class="editor-toolbar">
+            <span>Inspect &amp; live-edit persistent <code>WorldState</code> &amp; executed Blender 4.1 <code>bpy</code> code:</span>
+            <button id="btnApplyCodeEdit" class="btn btn-small btn-primary">Apply WorldState Edit</button>
+          </div>
+          <textarea id="sceneCodeEditor" class="code-editor" spellcheck="false" placeholder="// Executed Blender 4.1 bpy script & WorldState JSON will populate here..."></textarea>
+        </div>
+
+        <!-- Tab 4: Model & Tool Telemetry Logs -->
+        <div id="tabLogs" class="tab-panel" style="display: none;">
+          <div id="callLogsList" class="logs-list">
+            <div class="empty-state">No model calls logged yet.</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="mvp2_app.js"></script>
+</body>
+</html>

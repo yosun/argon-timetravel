@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TIME TRAVEL — MVP3 Autonomous 3D Progress Gallery (Workflow #4)</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body {
+      background: #060911;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+    .gallery-container {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 20px 24px 60px;
+    }
+    .milestone-card {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 18px;
+      margin-bottom: 22px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    }
+    .milestone-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 10px;
+      margin-bottom: 14px;
+    }
+    .milestone-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .milestone-badge {
+      background: #1e293b;
+      color: #38bdf8;
+      border: 1px solid #0284c7;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-family: monospace;
+    }
+    .shots-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .shot-box {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .shot-box-header {
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #cbd5e1;
+      background: #131c2e;
+      display: flex;
+      justify-content: space-between;
+    }
+    .shot-box img {
+      width: 100%;
+      height: 210px;
+      object-fit: contain;
+      background: #05070c;
+      display: block;
+    }
+    .code-snippet {
+      background: #050811;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: #93c5fd;
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre;
+    }
+  </style>
+</head>
+<body>
+  <header class="top-bar">
+    <div class="brand">
+      <span class="badge-model">gemini-4-argon</span>
+      <span class="badge-moge">Workflow #4: Progress Gallery</span>
+      <h1>TIME TRAVEL — MVP3 Milestone Screenshot &amp; Code Evolution Gallery</h1>
+    </div>
+    <div class="controls-bar">
+      <a href="/" class="btn btn-primary" style="text-decoration:none;">← Return to Live MVP3 3D Workbench</a>
+      <a href="/mvp2" class="btn btn-secondary" style="text-decoration:none;">MVP2 Baseline</a>
+      <a href="/mvp1" class="btn btn-secondary" style="text-decoration:none;">MVP1 Baseline</a>
+      <button id="btnRefreshGallery" class="btn btn-step">↻ Refresh Milestones</button>
+    </div>
+  </header>
+
+  <div class="gallery-container">
+    <div id="milestonesRoot">
+      <div class="empty-state">Loading recorded MVP3 milestones...</div>
+    </div>
+  </div>
+
+  <script>
+    async function loadMilestones() {
+      const root = document.getElementById('milestonesRoot');
+      try {
+        const res = await fetch('/api/progress');
+        const data = await res.json();
+        const list = data.milestones || [];
+        if (!list.length) {
+          root.innerHTML = '<div class="milestone-card">No milestones recorded yet. Run the MVP3 Autonomous Loop on the main workbench to populate live 4-view screenshots, Adversarial Critic scores, and rewritten Blender bpy code.</div>';
+          return;
+        }
+        root.innerHTML = list.map((m) => {
+          const shots = (m.screenshots || []).map((s) => `
+            <div class="shot-box">
+              <div class="shot-box-header">
+                <span>${s.title || 'View'}</span>
+                <span style="color:#38bdf8;font-family:monospace;">${s.meta || ''}</span>
+              </div>
+              <img src="${s.dataUrl}" alt="${s.title}" />
+            </div>
+          `).join('');
+          return `
+            <section class="milestone-card">
+              <div class="milestone-header">
+                <div class="milestone-title">
+                  <span class="milestone-badge">${m.stageBadge || 'MILESTONE'}</span>
+                  <span>${m.title}</span>
+                </div>
+                <span style="font-size:11px;color:#94a3b8;font-family:monospace;">${m.timestamp || ''} | ${m.metricsSummary || ''}</span>
+              </div>
+              <p style="margin:0 0 12px;font-size:12px;color:#cbd5e1;line-height:1.5;">${m.description || ''}</p>
+              <div class="shots-grid">${shots}</div>
+              ${m.codePreview ? `<details><summary style="cursor:pointer;font-size:12px;color:#fbbf24;font-weight:600;margin-bottom:6px;">Inspect Generated / Rewritten Blender Python (bpy) &amp; Telemetry</summary><div class="code-snippet">${m.codePreview.replace(/</g, '&lt;')}</div></details>` : ''}
+            </section>
+          `;
+        }).join('');
+      } catch (e) {
+        root.innerHTML = `<div class="milestone-card">Error loading progress gallery: ${e.message}</div>`;
+      }
+    }
+    document.getElementById('btnRefreshGallery').addEventListener('click', loadMilestones);
+    loadMilestones();
+  </script>
+</body>
+</html>

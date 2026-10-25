@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gemini 4 Argon — 3D Time Travel &amp; Causal World Simulator (MVP1)</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="vendor/three.min.js"></script>
+  <script src="vendor/GLTFLoader.js"></script>
+</head>
+<body>
+  <!-- Top Header Bar -->
+  <header class="top-bar">
+    <div class="brand">
+      <span class="badge-model">gemini-4-argon</span>
+      <span class="badge-moge">MoGe-2 3D API</span>
+      <span class="badge-moge" style="background:linear-gradient(135deg,#d97706,#ea580c);">Blender 4.1 bpy → GLB</span>
+      <h1>TIME TRAVEL — MVP1: Image-Grounded 3D &amp; Causal Simulator</h1>
+    </div>
+
+    <div class="controls-bar">
+      <label class="file-upload-btn">
+        <span>Upload Photo</span>
+        <input type="file" id="photoInput" accept="image/*" />
+      </label>
+      <button id="btnLoadSample" class="btn btn-secondary">Load Sample Photo</button>
+
+      <div class="select-group" title="Gemini 4 Argon Thinking Level">
+        <label for="thinkingLevelSelect">Thinking:</label>
+        <select id="thinkingLevelSelect">
+          <option value="LOW" selected>LOW (Fast Demo)</option>
+          <option value="MEDIUM">MEDIUM</option>
+          <option value="HIGH">HIGH</option>
+        </select>
+      </div>
+
+      <div class="divider"></div>
+
+      <button id="btnRunDemoLoop" class="btn btn-primary">▶ Run Complete Time-Travel Demo</button>
+      <button id="btnStepReconstruct" class="btn btn-step" title="Phase 1 & 2: MoGe-2 3D Mesh + Argon WorldState">1. Reconstruct 3D World</button>
+      <button id="btnStepTravelPast" class="btn btn-timetravel" disabled title="Phase 3: Travel to 1926">2. TRAVEL TO PAST (1926)</button>
+      <button id="btnStepIntervene" class="btn btn-step" disabled title="Phase 4: Apply Historical Intervention & Recompute Future">3. Change the Past</button>
+      <button id="btnReturnPresent" class="btn btn-present" disabled title="Phase 5: Return to Original Camera (Original 2026 | Alternate 2026)">4. RETURN TO PRESENT (2026)</button>
+      <button id="btnStepVerify" class="btn btn-step" disabled title="Phase 6: Autonomous Argon Visual & Causal Verification">5. Argon Verify</button>
+    </div>
+  </header>
+
+  <!-- API Error Banner -->
+  <div id="apiErrorBanner" class="api-error-banner" style="display: none;">
+    <div class="error-header">
+      <strong>Exact API Error Report (No Silent Model Substitution)</strong>
+      <button id="btnDismissError" class="btn btn-small">Dismiss</button>
+    </div>
+    <pre id="apiErrorText"></pre>
+  </div>
+
+  <!-- Status & Workflow Progress Strip -->
+  <div class="status-strip">
+    <div class="workflow-steps">
+      <span id="wfStep1" class="wf-pill active">1. Upload Photo</span>
+      <span class="wf-arrow">→</span>
+      <span id="wfStep2" class="wf-pill">2. Enter 3D World (MoGe-2)</span>
+      <span class="wf-arrow">→</span>
+      <span id="wfStep3" class="wf-pill">3. Travel to Past (1926)</span>
+      <span class="wf-arrow">→</span>
+      <span id="wfStep4" class="wf-pill">4. Change History</span>
+      <span class="wf-arrow">→</span>
+      <span id="wfStep5" class="wf-pill">5. Return to Present (2026)</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span id="statusBadge" class="status-pill status-idle">Idle — Load or Upload a Photo</span>
+      <span id="modelMetaInfo" class="model-meta">Vertex AI (`crueltycam` / `1016998522214`) | `gemini-4-argon` + `MoGe-2`</span>
+    </div>
+  </div>
+
+  <!-- Main Workbench Grid -->
+  <main class="workbench-grid">
+    <!-- Left Column: Interactive 3D Viewport + Time Travel Control Deck + 5-View Verification Strip -->
+    <div class="left-col">
+      <section class="card">
+        <div class="card-header">
+          <div class="title-group">
+            <h2>Interactive 3D World Viewport</h2>
+            <span id="activeStageLabel" class="stage-badge">Stage: Present (2026)</span>
+          </div>
+
+          <div class="viewport-toolbar">
+            <div class="stage-switcher" id="stageSwitcher">
+              <button data-stage="present2026" class="btn-chip active">Original 2026</button>
+              <button data-stage="displaced" class="btn-chip">Displaced (+0.35m)</button>
+              <button data-stage="past1926" class="btn-chip">Past (1926)</button>
+              <button data-stage="alternate2026" class="btn-chip">Alternate 2026</button>
+            </div>
+
+            <button id="btnResetCamera" class="btn-chip btn-accent" title="Return to exact calibrated original camera viewpoint [0,0,0]">Original Camera [0,0,0]</button>
+            <button id="btnDisplaceCamera" class="btn-chip" title="Translate camera +0.35m right to verify genuine 3D parallax">Test Parallax (+0.35m)</button>
+
+            <label class="toggle-chip" title="Toggle interactive split wipe comparison: ORIGINAL 2026 | ALTERNATE 2026">
+              <input type="checkbox" id="toggleSplitSlider" />
+              <span>Split: ORIG | ALT 2026</span>
+            </label>
+            <label class="toggle-chip" title="Show MoGe-2 3D triangle mesh wireframe">
+              <input type="checkbox" id="toggleWireframe" />
+              <span>3D Wireframe</span>
+            </label>
+            <label class="toggle-chip" title="Highlight objects causally modified by historical intervention">
+              <input type="checkbox" id="toggleAffectedHighlights" checked />
+              <span>Causal Highlights</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 3D Viewport Container -->
+        <div class="viewport-container" id="viewportContainer">
+          <canvas id="threeCanvas"></canvas>
+
+          <!-- Interactive Split Comparison Overlay (ORIGINAL 2026 | ALTERNATE 2026) -->
+          <div id="splitCompareOverlay" class="split-compare-overlay" style="display: none;">
+            <div id="splitLeftClip" class="split-left-clip">
+              <img id="splitOriginalImg" alt="Original 2026 View" />
+              <div class="split-badge split-badge-left">ORIGINAL 2026 (Baseline)</div>
+            </div>
+            <div class="split-badge split-badge-right">ALTERNATE 2026 (Counterfactual)</div>
+            <div id="splitDividerLine" class="split-divider-line">
+              <div class="split-handle">⇄</div>
+            </div>
+            <input type="range" id="splitSliderInput" class="split-slider-input" min="0" max="100" value="50" />
+          </div>
+
+          <!-- Top-Left Telemetry HUD -->
+          <div class="hud-top-left">
+            <div id="hudCameraPose">Cam: [0.00, 0.00, 0.00] | FOV: 43.3°</div>
+            <div id="hudGeometryInfo">
+              <span class="obs-dot">●</span> MoGe-2 Metric 3D Mesh | <span class="inf-dot">●</span> Argon Causal Layer
+            </div>
+            <div id="hudTimelineState">Year: 2026 | Branch: baseline_2026</div>
+          </div>
+
+          <!-- Selected Object Causal Callout -->
+          <div id="causalCallout" class="causal-callout" style="display: none;">
+            <div class="callout-header">
+              <strong id="calloutTitle">Object Causal Trace</strong>
+              <button id="btnCloseCallout" class="btn-close">✕</button>
+            </div>
+            <div id="calloutBody" class="callout-body"></div>
+            <div id="calloutProvenance" class="callout-prov"></div>
+          </div>
+
+          <!-- Bottom Navigation Controls -->
+          <div class="hud-bottom-controls">
+            <div class="nav-dpad">
+              <button data-move="forward" title="Move Forward (W)">W ↑</button>
+              <button data-move="left" title="Strafe Left (A)">← A</button>
+              <button data-move="back" title="Move Back (S)">S ↓</button>
+              <button data-move="right" title="Strafe Right (D)">D →</button>
+              <button data-move="up" title="Move Up (E)">Up</button>
+              <button data-move="down" title="Move Down (Q)">Down</button>
+            </div>
+            <div class="nav-hint">Drag to Orbit • WASD / Scroll to Move • Click Highlighted Object for Causal Explanation</div>
+          </div>
+        </div>
+
+        <!-- Time Travel & Counterfactual Intervention Deck -->
+        <div class="timetravel-deck">
+          <div class="timeline-row">
+            <div class="timeline-label">
+              <strong>TIMELINE YEAR:</strong>
+              <span id="timelineYearLabel" class="year-readout">2026</span>
+              <span id="timelineBranchBadge" class="branch-badge">Branch: baseline_2026</span>
+            </div>
+            <div class="timeline-slider-wrap">
+              <span class="yr-tick">1906</span>
+              <input type="range" id="timelineSlider" min="1906" max="2026" step="10" value="2026" />
+              <span class="yr-tick">1926</span>
+              <span class="yr-tick">1976</span>
+              <span class="yr-tick">2026</span>
+            </div>
+          </div>
+
+          <div class="intervention-row">
+            <div class="intervention-input-group">
+              <input
+                type="text"
+                id="interventionInput"
+                placeholder="Enter a historical intervention in 1926 (e.g., Install an ornate Art Deco stained-glass skylight & carved mahogany console)..."
+              />
+              <button id="btnApplyIntervention" class="btn btn-timetravel">⚡ Change History &amp; Recompute Future</button>
+            </div>
+            <div class="suggested-chips" id="suggestedInterventionsBar">
+              <span class="chip-hint">Suggested 1926 Interventions:</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Phase 1 & Phase 5 Verification Strip (5 Slots) -->
+      <section class="card">
+        <div class="card-header">
+          <h2>Phase 1 &amp; Phase 5 Verification Strip (Geometry, Parallax &amp; Counterfactual Return)</h2>
+          <span class="subtle-note">Same-camera similarity verifies texture registration; Displaced view (+0.35m) verifies genuine 3D depth parallax</span>
+        </div>
+        <div class="comparison-grid comparison-grid-5">
+          <!-- 1. Original Photo -->
+          <div class="compare-slot">
+            <div class="slot-header">
+              <span>1. Original Photo (2026)</span>
+              <span id="origDimensions" class="slot-meta">—</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgOriginal" alt="Original Photograph" style="display: none;" />
+              <div id="emptyOriginal" class="empty-placeholder">Upload or Load Photo</div>
+            </div>
+          </div>
+
+          <!-- 2. MoGe-2 Depth Map & Validity Mask -->
+          <div class="compare-slot">
+            <div class="slot-header">
+              <span>2. MoGe-2 Depth Map</span>
+              <button id="btnToggleMaskView" class="btn-chip" style="padding:0 5px;font-size:10px;" title="Toggle between Colorized Depth Map and Occlusion Validity Mask">Mask</button>
+              <span id="depthRangeMeta" class="slot-meta">Estimate</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgDepthMap" alt="Estimated MoGe-2 Depth Map" style="display: none;" />
+              <div id="emptyDepthMap" class="empty-placeholder">Awaiting MoGe-2</div>
+            </div>
+          </div>
+
+          <!-- 3. Original-Camera 3D Render -->
+          <div class="compare-slot">
+            <div class="slot-header">
+              <span>3. Same-Cam 3D Render</span>
+              <span id="simSameCamMeta" class="slot-meta">Pose [0,0,0]</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgRenderSameCam" alt="Original Camera 3D Render" style="display: none;" />
+              <div id="emptyRenderSameCam" class="empty-placeholder">Awaiting 3D Mesh</div>
+            </div>
+          </div>
+
+          <!-- 4. Slightly Displaced Camera Render (Parallax Proof) -->
+          <div class="compare-slot">
+            <div class="slot-header">
+              <span>4. Displaced (+0.35m)</span>
+              <span id="parallaxMeta" class="slot-meta">Parallax Test</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgRenderDisplaced" alt="Displaced Camera Parallax Render" style="display: none;" />
+              <div id="emptyRenderDisplaced" class="empty-placeholder">Awaiting Parallax</div>
+            </div>
+          </div>
+
+          <!-- 5. Alternate 2026 Counterfactual Render -->
+          <div class="compare-slot">
+            <div class="slot-header">
+              <span>5. Alternate 2026</span>
+              <span id="simAltMeta" class="slot-meta">Counterfactual</span>
+            </div>
+            <div class="slot-img-wrap">
+              <img id="imgRenderAlternate" alt="Alternate 2026 Render" style="display: none;" />
+              <div id="emptyRenderAlternate" class="empty-placeholder">Awaiting Time Travel</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Right Column: Separate Verification Metrics + Causal Graph + Argon Critique + WorldState JSON -->
+    <div class="right-col">
+      <!-- 6 Separate Evaluation Metrics -->
+      <section class="card">
+        <div class="card-header">
+          <h2>Evaluation &amp; Verification Telemetry (Separate Dimensions)</h2>
+          <span class="subtle-note">Distinguishes Observed 3D Geometry from Speculative Counterfactuals</span>
+        </div>
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <span class="metric-label">1. Visual Fidelity (Same-Cam)</span>
+            <strong id="metricVisualFidelity" class="metric-value">—</strong>
+            <span id="metricVisualSub" class="metric-sub">PSNR / SSIM / MAE vs Photo</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">2. Spatial Consistency (3D)</span>
+            <strong id="metricSpatialConsistency" class="metric-value">—</strong>
+            <span id="metricSpatialSub" class="metric-sub">MoGe-2 Metric Parallax &amp; FOV</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">3. Causal Consistency</span>
+            <strong id="metricCausalConsistency" class="metric-value">—</strong>
+            <span id="metricCausalSub" class="metric-sub">Affected vs Unaffected Structures</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">4. Temporal Consistency</span>
+            <strong id="metricTemporalConsistency" class="metric-value">—</strong>
+            <span id="metricTemporalSub" class="metric-sub">1926 Intervention → 2026 State</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">5. Runtime Correctness</span>
+            <strong id="metricRuntimeCorrectness" class="metric-value">—</strong>
+            <span id="metricRuntimeSub" class="metric-sub">3D Mesh &amp; Procedural Execution</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">6. Stage Latency Breakdown</span>
+            <strong id="metricLatencies" class="metric-value">—</strong>
+            <span id="metricLatencySub" class="metric-sub">MoGe-2 | Argon | Mesh | Total</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tabbed Inspector: Causal Graph | Argon Verification Loop | WorldState JSON | Model Logs -->
+      <section class="card">
+        <div class="tabs-header">
+          <button class="tab-btn active" data-tab="tabCausal">Causal Graph &amp; Consequences</button>
+          <button class="tab-btn" data-tab="tabVerify">Argon Verification Loop</button>
+          <button class="tab-btn" data-tab="tabWorldState">WorldState JSON &amp; 3D Code</button>
+          <button class="tab-btn" data-tab="tabLogs">Argon &amp; Tool Logs</button>
+        </div>
+
+        <!-- Tab 1: Causal Graph & Consequences -->
+        <div id="tabCausal" class="tab-panel">
+          <div id="causalGraphContainer" class="causal-container">
+            <div class="empty-state">
+              Reconstruct the 3D world and trigger a historical intervention in 1926 to inspect the causal dependency chain, affected objects, and preserved structures.
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Autonomous Argon Verification Loop -->
+        <div id="tabVerify" class="tab-panel" style="display: none;">
+          <div id="discrepanciesList" class="discrepancies-list">
+            <div class="empty-state">
+              Run Step 5 (Argon Verify) to execute visual &amp; causal verification comparing Original 2026 vs Alternate 2026.
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Persistent WorldState JSON & Editable 3D Specs -->
+        <div id="tabWorldState" class="tab-panel" style="display: none;">
+          <div class="editor-toolbar">
+            <span>Inspect &amp; live-edit persistent <code>WorldState</code> (objects, 3D transforms, provenance, causal graph):</span>
+            <button id="btnApplyCodeEdit" class="btn btn-small btn-primary">Apply WorldState Edit</button>
+          </div>
+          <textarea id="sceneCodeEditor" class="code-editor" spellcheck="false" placeholder="// WorldState JSON will populate here..."></textarea>
+        </div>
+
+        <!-- Tab 4: Model & Tool Telemetry Logs -->
+        <div id="tabLogs" class="tab-panel" style="display: none;">
+          <div id="callLogsList" class="logs-list">
+            <div class="empty-state">No model calls logged yet.</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="mvp1_app.js"></script>
+</body>
+</html>

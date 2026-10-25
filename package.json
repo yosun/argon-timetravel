@@ -1,0 +1,22 @@
+{
+  "name": "argon-timetravel",
+  "version": "1.0.0",
+  "description": "Autonomous 3D World Generation, 4-View Adversarial Critic & Counterfactual Causal Simulator powered by Gemini 4 Argon, MoGe-2 metric depth, and Blender bpy toolchains.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "depth-service": "python3 depth_service.py"
+  },
+  "keywords": [
+    "gemini",
+    "argon",
+    "timetravel",
+    "3d-world-generation",
+    "blender",
+    "threejs",
+    "moge-2",
+    "causal-simulation"
+  ],
+  "author": "yosun",
+  "license": "MIT"
+}
