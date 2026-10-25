@@ -3,7 +3,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execSync } = require('child_process');
+const { execSync, exec } = require('child_process');
 
 const PORT = process.env.PORT || 3456;
 const DEPTH_SERVICE_PORT = 3457;
@@ -25,54 +25,67 @@ const DEFAULT_TEXTURES = {
   walnut: path.join(SAMPLES_DIR, 'texture_walnut_pbr.jpg'),
 };
 
-function runBlenderMvp3Toolchain(specObj, prefix = 'mvp3_blender') {
-  const t0 = Date.now();
+// Shared job description for the MVP3 Blender toolchain. Both the synchronous runner
+// (used by the original endpoints) and the async runner (used by the streaming causal
+// endpoint) hash the exact same spec, so they share one GLB cache.
+function prepareMvp3BlenderJob(specObj, prefix) {
   const hash = crypto.createHash('sha256').update(JSON.stringify(specObj)).digest('hex').slice(0, 20);
   const specPath = path.join(CACHE_DIR, `${prefix}_${hash}_spec.json`);
   const glbFilename = `${prefix}_${hash}.glb`;
   const glbPath = path.join(CACHE_DIR, glbFilename);
   const pyPath = path.join(CACHE_DIR, `${prefix}_${hash}.py`);
   const telPath = path.join(CACHE_DIR, `${prefix}_${hash}.telemetry.json`);
-
-  const fullSpec = {
-    ...specObj,
-    textures: DEFAULT_TEXTURES,
-  };
-
-  if (fs.existsSync(glbPath) && fs.existsSync(pyPath) && fs.existsSync(telPath)) {
-    let telemetry = {};
-    try {
-      telemetry = JSON.parse(fs.readFileSync(telPath, 'utf8'));
-    } catch (_) {}
-    return {
-      glbUrl: `/.cache/${glbFilename}`,
-      pythonScript: fs.readFileSync(pyPath, 'utf8'),
-      telemetry,
-      blenderLatencyMs: Date.now() - t0,
-      cached: true,
-    };
-  }
-
-  fs.writeFileSync(specPath, JSON.stringify(fullSpec, null, 2));
-  execSync(
-    `"${BLENDER_BIN}" --background --factory-startup --python "${BLENDER_SCRIPT_MVP3}" -- "${specPath}" "${glbPath}" "${pyPath}" "${telPath}"`,
-    { stdio: 'pipe', timeout: 45000 }
-  );
-
-  let telemetry = {};
-  if (fs.existsSync(telPath)) {
-    try {
-      telemetry = JSON.parse(fs.readFileSync(telPath, 'utf8'));
-    } catch (_) {}
-  }
-
   return {
-    glbUrl: `/.cache/${glbFilename}`,
-    pythonScript: fs.existsSync(pyPath) ? fs.readFileSync(pyPath, 'utf8') : '',
-    telemetry,
-    blenderLatencyMs: Date.now() - t0,
-    cached: false,
+    t0: Date.now(),
+    specPath,
+    glbFilename,
+    glbPath,
+    pyPath,
+    telPath,
+    fullSpec: { ...specObj, textures: DEFAULT_TEXTURES },
+    isCached: fs.existsSync(glbPath) && fs.existsSync(pyPath) && fs.existsSync(telPath),
+    cmd: `"${BLENDER_BIN}" --background --factory-startup --python "${BLENDER_SCRIPT_MVP3}" -- "${specPath}" "${glbPath}" "${pyPath}" "${telPath}"`,
   };
+}
+
+function readMvp3BlenderResult(job, cached) {
+  let telemetry = {};
+  if (fs.existsSync(job.telPath)) {
+    try {
+      telemetry = JSON.parse(fs.readFileSync(job.telPath, 'utf8'));
+    } catch (_) {}
+  }
+  return {
+    glbUrl: `/.cache/${job.glbFilename}`,
+    pythonScript: fs.existsSync(job.pyPath) ? fs.readFileSync(job.pyPath, 'utf8') : '',
+    telemetry,
+    blenderLatencyMs: Date.now() - job.t0,
+    cached,
+  };
+}
+
+function runBlenderMvp3Toolchain(specObj, prefix = 'mvp3_blender') {
+  const job = prepareMvp3BlenderJob(specObj, prefix);
+  if (job.isCached) return readMvp3BlenderResult(job, true);
+
+  fs.writeFileSync(job.specPath, JSON.stringify(job.fullSpec, null, 2));
+  execSync(job.cmd, { stdio: 'pipe', timeout: 45000 });
+  return readMvp3BlenderResult(job, false);
+}
+
+// Non-blocking variant: identical spec/cache, but lets the event loop flush streamed
+// progress events while Blender compiles an era.
+function runBlenderMvp3ToolchainAsync(specObj, prefix = 'mvp3_blender') {
+  const job = prepareMvp3BlenderJob(specObj, prefix);
+  if (job.isCached) return Promise.resolve(readMvp3BlenderResult(job, true));
+
+  fs.writeFileSync(job.specPath, JSON.stringify(job.fullSpec, null, 2));
+  return new Promise((resolve, reject) => {
+    exec(job.cmd, { timeout: 45000, maxBuffer: 64 * 1024 * 1024 }, (err) => {
+      if (err) return reject(err);
+      resolve(readMvp3BlenderResult(job, false));
+    });
+  });
 }
 
 // Legacy MVP1/MVP2 Blender runner preserved for /mvp1 and /mvp2 baseline routes
@@ -428,7 +441,182 @@ const MIME_TYPES = {
   '.svg': 'image/svg+xml',
   '.glb': 'model/gltf-binary',
   '.json': 'application/json; charset=utf-8',
+  '.woff2': 'font/woff2',
 };
+
+// ============================================================================
+// MVP3 STEP 5: Multi-epoch causal simulation (shared by the JSON and streaming routes).
+// `emit(event)` receives real pipeline progress: Argon reasoning, then one event per
+// era as its Blender GLB is compiled. Prompt + cache key are unchanged from MVP3.
+// ============================================================================
+async function runMvp3CausalSimulation(body, emit = () => {}, { asyncBlender = false } = {}) {
+  const origPhoto = (body.originalImageDataUrl || '').replace(/^data:[^;]+;base64,/, '');
+  const verifiedBpyCode = body.verifiedBpyCode || '';
+  const interventionText =
+    body.interventionText ||
+    'In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.';
+  const metricSummary = body.metricSummary || {};
+  const groundYThree = Number(metricSummary.groundYThree ?? -1.72);
+  const thinkingLevel = body.thinkingLevel || 'MEDIUM';
+
+  const cacheFile = getCacheKey('mvp3_causal_v1', {
+    origHead: origPhoto.slice(0, 300),
+    interventionText,
+    thinkingLevel,
+  });
+
+  const compileCausalEras = async (causalData) => {
+    let totalBlenderMs = 0;
+    const eras = [];
+    const sourceEras = causalData.eras || [];
+    emit({ phase: 'plan', eras: sourceEras.map((e) => ({ year: e.year, eraTitle: e.eraTitle, provenance: e.provenance })) });
+    for (const era of sourceEras) {
+      const code = era.eraBpyCode || verifiedBpyCode;
+      let bOut = { glbUrl: null, pythonScript: '', telemetry: {}, blenderLatencyMs: 0 };
+      emit({ phase: 'era_compile_start', year: era.year });
+      try {
+        const spec = { stage: `mvp3_era_${era.year}`, bpyCode: code, groundYThree };
+        bOut = asyncBlender
+          ? await runBlenderMvp3ToolchainAsync(spec, `mvp3_era_${era.year}`)
+          : runBlenderMvp3Toolchain(spec, `mvp3_era_${era.year}`);
+        totalBlenderMs += bOut.blenderLatencyMs || 0;
+      } catch (e) {
+        console.error(`[MVP3 Era ${era.year} Blender Error]`, e.message);
+      }
+      emit({
+        phase: 'era_compiled',
+        year: era.year,
+        ok: Boolean(bOut.glbUrl),
+        glbUrl: bOut.glbUrl,
+        cached: Boolean(bOut.cached),
+        objectCount: bOut.telemetry?.objectCount || 0,
+        blenderLatencyMs: bOut.blenderLatencyMs || 0,
+      });
+      eras.push({
+        ...era,
+        blenderGlbUrl: bOut.glbUrl,
+        blenderPythonScript: bOut.pythonScript,
+        blenderTelemetry: bOut.telemetry,
+        blenderLatencyMs: bOut.blenderLatencyMs,
+      });
+    }
+    return {
+      ...causalData,
+      eras,
+      totalBlenderLatencyMs: totalBlenderMs,
+    };
+  };
+
+  const hit = readCache(cacheFile);
+  if (hit && !body.forceUncached) {
+    emit({ phase: 'argon_cached', latencyMs: hit.latencyMs });
+    const compiled = await compileCausalEras(hit.data);
+    return {
+      ok: true,
+      cached: true,
+      latencyMs: hit.latencyMs,
+      usage: hit.usage,
+      causalSimulation: compiled,
+    };
+  }
+
+  const causalPrompt = `
+You are executing **Step 5 of MVP3: Multi-Epoch Causal Counterfactual World Simulation** on top of our verified Round 2 3D architectural scene.
+
+Verified Present-Day Baseline Blender Python (\`verifiedBpyCode\`, with ground plane \`Y_ground = ${groundYThree}\`):
+\`\`\`python
+${verifiedBpyCode}
+\`\`\`
+
+User's Historical Intervention:
+"${interventionText}"
+
+Propagate this historical intervention forward across **4 distinct historical & counterfactual epochs** culminating in **Alternate 2026**:
+1. **Epoch 1 (Origin Intervention Era, e.g. 1206 or 1926)**: The immediate construction of the historical intervention in the scene.
+2. **Epoch 2 (Intermediate Historical State 1, e.g. 1566 or 1956)**: How the intervention aged, weathered, and influenced adjacent structures centuries/decades later.
+3. **Epoch 3 (Intermediate Historical State 2, e.g. 1938 or 1986)**: Museum / architectural preservation, structural reinforcement, and lighting adaptation.
+4. **Epoch 4 (Alternate Present 2026)**: The resulting counterfactual 2026 scene viewed from the exact original camera [0,0,0], preserving \`unaffectedStructures\` while exhibiting the surviving counterfactual 3D monument/structures.
+
+For EACH of the 4 epochs, write a complete, self-contained \`eraBpyCode\` script that keeps the verified surrounding architectural colonnades/arcades anchored at their exact MoGe-2 3D coordinates while procedurally modeling the evolving counterfactual 3D structures for that epoch!
+
+Return ONLY valid JSON matching this schema:
+{
+  "intervention": ${JSON.stringify(interventionText)},
+  "directlyAffectedObjects": ["central_carved_wellhead", "terracotta_fern_cluster", "skylight_coffered_grid"],
+  "unaffectedStructures": ["north_romanesque_arcade", "west_colonnade_arcade", "east_colonnade_arcade", "courtyard_pebble_floor"],
+  "causalChainSummary": "2-sentence overview of how the past intervention reshaped the space across centuries/decades into Alternate 2026",
+  "eras": [
+    {
+      "year": 1206,
+      "eraTitle": "1206 Medieval Monastic Intervention",
+      "provenance": "speculative_counterfactual",
+      "narrative": "2-sentence causal description of this epoch",
+      "causalTransitions": ["Key structural change #1", "Key material/spatial effect #2"],
+      "grading": { "sepiaStrength": 0.34, "warmth": 0.18 },
+      "eraBpyCode": "# Complete executable Blender Python code for this era"
+    },
+    {
+      "year": 1566,
+      "eraTitle": "1566 Renaissance Cloister Adaptation",
+      "provenance": "speculative_counterfactual",
+      "narrative": "2-sentence causal description of this intermediate epoch",
+      "causalTransitions": ["Transition #1", "Transition #2"],
+      "grading": { "sepiaStrength": 0.22, "warmth": 0.14 },
+      "eraBpyCode": "# Complete executable Blender Python code for this era"
+    },
+    {
+      "year": 1938,
+      "eraTitle": "1938 Architectural Preservation & Reconstruction",
+      "provenance": "speculative_counterfactual",
+      "narrative": "2-sentence causal description of this intermediate epoch",
+      "causalTransitions": ["Transition #1", "Transition #2"],
+      "grading": { "sepiaStrength": 0.10, "warmth": 0.08 },
+      "eraBpyCode": "# Complete executable Blender Python code for this era"
+    },
+    {
+      "year": 2026,
+      "eraTitle": "Alternate 2026 Present Counterfactual",
+      "provenance": "speculative_counterfactual",
+      "narrative": "2-sentence description of the Alternate 2026 state returned to camera [0,0,0]",
+      "causalTransitions": ["1938 -> 2026 preservation outcome #1", "Outcome #2"],
+      "grading": { "sepiaStrength": 0.0, "warmth": 0.04 },
+      "eraBpyCode": "# Complete executable Blender Python code for Alternate 2026"
+    }
+  ]
+}
+`;
+
+  emit({ phase: 'argon_start', thinkingLevel });
+  const t0 = Date.now();
+  const heartbeat = setInterval(() => emit({ phase: 'argon_thinking', elapsedMs: Date.now() - t0 }), 1000);
+  let result;
+  try {
+    result = await callGemini4Argon({
+      systemInstruction: MVP3_SYSTEM_INSTRUCTION,
+      thinkingLevel,
+      temperature: 0.25,
+      parts: [
+        { text: 'ORIGINAL PHOTOGRAPH:' },
+        { inlineData: { mimeType: 'image/jpeg', data: origPhoto } },
+        { text: causalPrompt },
+      ],
+    });
+  } finally {
+    clearInterval(heartbeat);
+  }
+  emit({ phase: 'argon_done', latencyMs: result.latencyMs, usage: result.usage });
+
+  writeCache(cacheFile, result);
+  const compiled = await compileCausalEras(result.data);
+
+  return {
+    ok: true,
+    cached: false,
+    latencyMs: result.latencyMs,
+    usage: result.usage,
+    causalSimulation: compiled,
+  };
+}
 
 const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
@@ -967,153 +1155,8 @@ Return ONLY valid JSON matching this schema:
   if (req.method === 'POST' && pathname === '/api/argon/mvp3-causal') {
     try {
       const body = await readJsonBody(req);
-      const origPhoto = (body.originalImageDataUrl || '').replace(/^data:[^;]+;base64,/, '');
-      const verifiedBpyCode = body.verifiedBpyCode || '';
-      const interventionText =
-        body.interventionText ||
-        'In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.';
-      const metricSummary = body.metricSummary || {};
-      const groundYThree = Number(metricSummary.groundYThree ?? -1.72);
-      const thinkingLevel = body.thinkingLevel || 'MEDIUM';
-
-      const cacheFile = getCacheKey('mvp3_causal_v1', {
-        origHead: origPhoto.slice(0, 300),
-        interventionText,
-        thinkingLevel,
-      });
-
-      const compileCausalEras = (causalData) => {
-        let totalBlenderMs = 0;
-        const eras = (causalData.eras || []).map((era) => {
-          const code = era.eraBpyCode || verifiedBpyCode;
-          let bOut = { glbUrl: null, pythonScript: '', telemetry: {}, blenderLatencyMs: 0 };
-          try {
-            bOut = runBlenderMvp3Toolchain(
-              {
-                stage: `mvp3_era_${era.year}`,
-                bpyCode: code,
-                groundYThree,
-              },
-              `mvp3_era_${era.year}`
-            );
-            totalBlenderMs += bOut.blenderLatencyMs || 0;
-          } catch (e) {
-            console.error(`[MVP3 Era ${era.year} Blender Error]`, e.message);
-          }
-          return {
-            ...era,
-            blenderGlbUrl: bOut.glbUrl,
-            blenderPythonScript: bOut.pythonScript,
-            blenderTelemetry: bOut.telemetry,
-            blenderLatencyMs: bOut.blenderLatencyMs,
-          };
-        });
-        return {
-          ...causalData,
-          eras,
-          totalBlenderLatencyMs: totalBlenderMs,
-        };
-      };
-
-      const hit = readCache(cacheFile);
-      if (hit && !body.forceUncached) {
-        const compiled = compileCausalEras(hit.data);
-        return sendJson(res, 200, {
-          ok: true,
-          cached: true,
-          latencyMs: hit.latencyMs,
-          usage: hit.usage,
-          causalSimulation: compiled,
-        });
-      }
-
-      const causalPrompt = `
-You are executing **Step 5 of MVP3: Multi-Epoch Causal Counterfactual World Simulation** on top of our verified Round 2 3D architectural scene.
-
-Verified Present-Day Baseline Blender Python (\`verifiedBpyCode\`, with ground plane \`Y_ground = ${groundYThree}\`):
-\`\`\`python
-${verifiedBpyCode}
-\`\`\`
-
-User's Historical Intervention:
-"${interventionText}"
-
-Propagate this historical intervention forward across **4 distinct historical & counterfactual epochs** culminating in **Alternate 2026**:
-1. **Epoch 1 (Origin Intervention Era, e.g. 1206 or 1926)**: The immediate construction of the historical intervention in the scene.
-2. **Epoch 2 (Intermediate Historical State 1, e.g. 1566 or 1956)**: How the intervention aged, weathered, and influenced adjacent structures centuries/decades later.
-3. **Epoch 3 (Intermediate Historical State 2, e.g. 1938 or 1986)**: Museum / architectural preservation, structural reinforcement, and lighting adaptation.
-4. **Epoch 4 (Alternate Present 2026)**: The resulting counterfactual 2026 scene viewed from the exact original camera [0,0,0], preserving \`unaffectedStructures\` while exhibiting the surviving counterfactual 3D monument/structures.
-
-For EACH of the 4 epochs, write a complete, self-contained \`eraBpyCode\` script that keeps the verified surrounding architectural colonnades/arcades anchored at their exact MoGe-2 3D coordinates while procedurally modeling the evolving counterfactual 3D structures for that epoch!
-
-Return ONLY valid JSON matching this schema:
-{
-  "intervention": ${JSON.stringify(interventionText)},
-  "directlyAffectedObjects": ["central_carved_wellhead", "terracotta_fern_cluster", "skylight_coffered_grid"],
-  "unaffectedStructures": ["north_romanesque_arcade", "west_colonnade_arcade", "east_colonnade_arcade", "courtyard_pebble_floor"],
-  "causalChainSummary": "2-sentence overview of how the past intervention reshaped the space across centuries/decades into Alternate 2026",
-  "eras": [
-    {
-      "year": 1206,
-      "eraTitle": "1206 Medieval Monastic Intervention",
-      "provenance": "speculative_counterfactual",
-      "narrative": "2-sentence causal description of this epoch",
-      "causalTransitions": ["Key structural change #1", "Key material/spatial effect #2"],
-      "grading": { "sepiaStrength": 0.34, "warmth": 0.18 },
-      "eraBpyCode": "# Complete executable Blender Python code for this era"
-    },
-    {
-      "year": 1566,
-      "eraTitle": "1566 Renaissance Cloister Adaptation",
-      "provenance": "speculative_counterfactual",
-      "narrative": "2-sentence causal description of this intermediate epoch",
-      "causalTransitions": ["Transition #1", "Transition #2"],
-      "grading": { "sepiaStrength": 0.22, "warmth": 0.14 },
-      "eraBpyCode": "# Complete executable Blender Python code for this era"
-    },
-    {
-      "year": 1938,
-      "eraTitle": "1938 Architectural Preservation & Reconstruction",
-      "provenance": "speculative_counterfactual",
-      "narrative": "2-sentence causal description of this intermediate epoch",
-      "causalTransitions": ["Transition #1", "Transition #2"],
-      "grading": { "sepiaStrength": 0.10, "warmth": 0.08 },
-      "eraBpyCode": "# Complete executable Blender Python code for this era"
-    },
-    {
-      "year": 2026,
-      "eraTitle": "Alternate 2026 Present Counterfactual",
-      "provenance": "speculative_counterfactual",
-      "narrative": "2-sentence description of the Alternate 2026 state returned to camera [0,0,0]",
-      "causalTransitions": ["1938 -> 2026 preservation outcome #1", "Outcome #2"],
-      "grading": { "sepiaStrength": 0.0, "warmth": 0.04 },
-      "eraBpyCode": "# Complete executable Blender Python code for Alternate 2026"
-    }
-  ]
-}
-`;
-
-      const result = await callGemini4Argon({
-        systemInstruction: MVP3_SYSTEM_INSTRUCTION,
-        thinkingLevel,
-        temperature: 0.25,
-        parts: [
-          { text: 'ORIGINAL PHOTOGRAPH:' },
-          { inlineData: { mimeType: 'image/jpeg', data: origPhoto } },
-          { text: causalPrompt },
-        ],
-      });
-
-      writeCache(cacheFile, result);
-      const compiled = compileCausalEras(result.data);
-
-      return sendJson(res, 200, {
-        ok: true,
-        cached: false,
-        latencyMs: result.latencyMs,
-        usage: result.usage,
-        causalSimulation: compiled,
-      });
+      const payload = await runMvp3CausalSimulation(body);
+      return sendJson(res, 200, payload);
     } catch (err) {
       return sendJson(res, err.status || 500, {
         ok: false,
@@ -1121,6 +1164,41 @@ Return ONLY valid JSON matching this schema:
         exactApiError: err.exactApiError || { message: err.message || String(err) },
       });
     }
+  }
+
+  // Streaming variant (NDJSON): same simulation, but emits real progress events so the
+  // timeline can show consequences propagating through each subsequent epoch.
+  if (req.method === 'POST' && pathname === '/api/argon/mvp3-causal-stream') {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      return sendJson(res, 400, { ok: false, exactApiError: { message: err.message } });
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Accel-Buffering': 'no',
+    });
+    let closed = false;
+    res.on('close', () => {
+      closed = true;
+    });
+    const emit = (evt) => {
+      if (!closed) res.write(JSON.stringify({ t: Date.now(), ...evt }) + '\n');
+    };
+    emit({ phase: 'accepted' });
+    try {
+      const payload = await runMvp3CausalSimulation(body, emit, { asyncBlender: true });
+      emit({ phase: 'done', payload });
+    } catch (err) {
+      emit({
+        phase: 'error',
+        status: err.status || 500,
+        exactApiError: err.exactApiError || { message: err.message || String(err) },
+      });
+    }
+    return res.end();
   }
 
   // ==========================================================================

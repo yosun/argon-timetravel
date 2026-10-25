@@ -3,507 +3,604 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TIME TRAVEL — MVP3: Autonomous 3D World Authoring, 4-View Adversarial Critic &amp; Causal Simulator</title>
+  <title>TIME TRAVEL — Cinematic Multi-Epoch 3D World &amp; Causal Simulator</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏳</text></svg>" />
   <link rel="stylesheet" href="styles.css" />
   <script src="vendor/three.min.js"></script>
   <script src="vendor/GLTFLoader.js"></script>
 </head>
 <body>
-  <!-- Top Header Bar -->
-  <header class="top-bar">
-    <div class="brand">
-      <span class="badge-model">gemini-4-argon</span>
-      <span class="badge-moge">MoGe-2 Metric 3D</span>
-      <span class="badge-moge" style="background:linear-gradient(135deg,#d97706,#ea580c);">Unrestricted Blender 4.1 bpy</span>
-      <span class="badge-moge" style="background:linear-gradient(135deg,#059669,#10b981);">Nano Banana PBR + 4-View Critic</span>
-      <h1>TIME TRAVEL — MVP3: Autonomous 3D World Generation &amp; Closed-Loop Critic</h1>
+  <!-- ========================================================================
+       1. PRIMARY FULL-VIEWPORT 3D CANVAS & ATMOSPHERIC VIGNETTE
+       ======================================================================== -->
+  <div class="viewport-container" id="viewportContainer">
+    <canvas id="threeCanvas"></canvas>
+    <div class="viewport-vignette"></div>
+
+    <!-- Interactive Split Comparison Overlay (Original Photo [0,0,0] vs Live 3D Render [0,0,0]) -->
+    <div id="splitCompareOverlay" class="split-compare-overlay" style="display: none;">
+      <div id="splitLeftClip" class="split-left-clip">
+        <img id="splitOriginalImg" alt="Original Reference View" />
+        <div id="splitLeftBadge" class="split-badge split-badge-left">ORIGINAL PHOTOGRAPH [0,0,0]</div>
+      </div>
+      <div id="splitRightBadge" class="split-badge split-badge-right">LIVE 3D SCENE RENDER [0,0,0]</div>
+      <div id="splitDividerLine" class="split-divider-line">
+        <div class="split-handle">⇄</div>
+      </div>
+      <input type="range" id="splitSliderInput" class="split-slider-input" min="0" max="100" value="50" />
     </div>
 
-    <div class="controls-bar">
-      <div class="select-group" title="Select Test Scene (Defaults to Unseen Romanesque Cloister Courtyard)">
-        <label for="sampleSelect">Scene:</label>
-        <select id="sampleSelect">
-          <option value="samples/cloister_courtyard.jpg" selected>Unseen Architectural: Cloister Courtyard</option>
-          <option value="samples/living_room.jpg">Baseline: Modern Living Room</option>
-          <option value="samples/dining_room.jpg">Baseline: Historic Dining Room</option>
-        </select>
+    <!-- Hidden Telemetry HUD for compatibility & headless screenshot cropping -->
+    <div id="viewportHudTop" style="display:none;">
+      <div id="hudCameraPose">Cam: [0.00, 0.00, 0.00] | FOV: 98.8°</div>
+      <div id="hudGeometryInfo">Observed: MoGe-2 Point Cloud | Inferred: Argon Blender 4.1 GLB</div>
+      <div id="hudTimelineState">Round: — | Critic Score: —</div>
+      <button id="btnInspectMonumentAncestry">Inspect Monument Ancestry</button>
+      <button id="btnInspectArcadeAncestry">Inspect Arcade Anchor</button>
+    </div>
+    <div id="viewportHudBottom" style="display:none;"></div>
+  </div>
+
+  <!-- ========================================================================
+       2. MINIMAL TOP CHROME BAR
+       Translucent glassmorphism controls: brand, camera presets, split toggle, dev mode
+       ======================================================================== -->
+  <header class="top-chrome">
+    <div class="brand-capsule">
+      <div class="brand-title">TIME TRAVEL <span class="sep">/</span></div>
+      <div class="brand-scene-tag" id="activeSceneTitle">The Cloisters · Romanesque Courtyard</div>
+    </div>
+
+    <div class="top-controls-group">
+      <!-- Camera View Angles Switcher -->
+      <div class="cam-presets-capsule" id="camViewSwitcher" title="Camera Viewpoint Presets">
+        <button data-cam="originalCam" class="cam-pill-btn active" title="Registered Origin [0,0,0] matching photograph">Original [0,0,0]</button>
+        <button data-cam="threeQuarter" class="cam-pill-btn" title="3/4 Overview Angle">Overview</button>
+        <button data-cam="lowAngle" class="cam-pill-btn" title="Low Ground Contact Angle">Ground</button>
+        <button data-cam="wireframe" class="cam-pill-btn" title="3D Mesh Topology Wireframe">Wireframe</button>
       </div>
 
-      <label class="file-upload-btn">
-        <span>Upload Photo</span>
-        <input type="file" id="photoInput" accept="image/*" />
+      <!-- Split Compare Toggle -->
+      <label class="glass-pill-btn" title="Toggle interactive side-by-side split comparison: Photo vs Live 3D at [0,0,0]">
+        <input type="checkbox" id="toggleSplitSlider" style="display:none;" />
+        <span class="dot"></span>
+        <span>Compare Photo</span>
       </label>
 
-      <div class="select-group" title="Gemini 4 Argon Thinking Level">
-        <label for="thinkingLevelSelect">Thinking:</label>
-        <select id="thinkingLevelSelect">
-          <option value="LOW">LOW</option>
-          <option value="MEDIUM" selected>MEDIUM</option>
-          <option value="HIGH">HIGH</option>
-        </select>
-      </div>
-
-      <div class="divider"></div>
-
-      <button id="btnRunDemoLoop" class="btn btn-primary" title="Run Complete End-to-End MVP3 Autonomous Acceptance Test">▶ Run Full MVP3 Autonomous Loop</button>
-      <button id="btnStep1Ground" class="btn btn-step" title="Workflow #6: MoGe-2 Metric Calibration + Annotated X/Y Grid + 2D SVG Floorplan">1. MoGe-2 &amp; 2D Plan</button>
-      <button id="btnStep2AuthorR1" class="btn btn-step" disabled title="Requirement 1: Argon Authors Unrestricted Scene-Specific Blender bpy Code (Round 1)">2. Author 3D (Round 1)</button>
-      <button id="btnStep3Critic" class="btn btn-timetravel" disabled title="Workflow #3: Independent Adversarial Critic Inspects 4 Views (Orig, 3/4, Low Angle, Wireframe)">3. 4-View Critic</button>
-      <button id="btnStep4RewriteR2" class="btn btn-present" disabled title="Requirement 3: Closed-Loop bpy Code Rewrite &amp; 4-View Rerender (Round 2)">4. Rewrite Code (Round 2)</button>
-      <button id="btnStep5Causal" class="btn btn-step" disabled title="Step 5: Multi-Epoch Causal Time Travel Simulation (1206 → 1566 → 1938 → Alt 2026)">5. Causal Time Travel</button>
-
-      <a href="/progress.html" target="_blank" class="btn btn-secondary" style="text-decoration:none;" title="Open Workflow #4 Progress Screenshot Gallery">Gallery ↗</a>
-      <a href="/mvp2" class="btn btn-secondary" style="text-decoration:none;padding:5px 8px;font-size:11px;" title="View Preserved MVP2 Baseline">MVP2</a>
-      <a href="/mvp1" class="btn btn-secondary" style="text-decoration:none;padding:5px 8px;font-size:11px;" title="View Preserved MVP1 Baseline">MVP1</a>
+      <!-- Developer Mode Toggle -->
+      <button id="btnToggleDevMode" class="glass-pill-btn" title="Toggle Engineering Workbench, Verification Metrics & Diagnostics (Key: D)">
+        <span class="dot" style="background:#6366f1;"></span>
+        <span>Developer Mode</span>
+        <span class="kbd-badge">D</span>
+      </button>
     </div>
   </header>
 
-  <!-- API Error Banner -->
-  <div id="apiErrorBanner" class="api-error-banner" style="display: none;">
-    <div class="error-header">
-      <strong>Exact API Error Report (No Silent Model Substitution)</strong>
-      <button id="btnDismissError" class="btn btn-small">Dismiss</button>
+  <!-- ========================================================================
+       3. PROMINENT CURRENT YEAR & HISTORICAL ERA OVERLAY
+       Large editorial typography displaying the active era and causal narrative
+       ======================================================================== -->
+  <div class="era-hero-overlay" id="eraHeroOverlay">
+    <div class="era-year-badge">
+      <span id="heroYearNumber">2026</span>
+      <span class="era-year-suffix" id="heroYearSuffix">PRESENT DAY</span>
     </div>
-    <pre id="apiErrorText"></pre>
-  </div>
-
-  <!-- 5-Step MVP3 Workflow Progress Strip -->
-  <div class="status-strip">
-    <div class="workflow-steps" style="flex-wrap:wrap;gap:4px;">
-      <span id="wfStep1" class="wf-pill active">1. MoGe-2 + X/Y Grid + 2D SVG Plan</span>
-      <span class="wf-arrow">→</span>
-      <span id="wfStep2" class="wf-pill">2. Unrestricted bpy Authoring (Round 1)</span>
-      <span class="wf-arrow">→</span>
-      <span id="wfStep3" class="wf-pill">3. 4-View Adversarial Critic</span>
-      <span class="wf-arrow">→</span>
-      <span id="wfStep4" class="wf-pill">4. Closed-Loop Code Rewrite (Round 2)</span>
-      <span class="wf-arrow">→</span>
-      <span id="wfStep5" class="wf-pill">5. Multi-Epoch Causal Time Travel</span>
-    </div>
-    <div style="display:flex;align-items:center;gap:12px;">
-      <span id="statusBadge" class="status-pill status-idle">Ready — Unseen Architectural Scene Loaded</span>
-      <span id="modelMetaInfo" class="model-meta">Vertex AI (`crueltycam`) | `gemini-4-argon` + `MoGe-2` + `Blender 4.1` + `Nano Banana`</span>
+    <div class="era-name-title" id="heroEraName">ALTERNATE PRESENT COUNTERFACTUAL</div>
+    <div class="era-provenance-tag" id="heroEraProvenance">
+      Surviving 820-year-old Gothic Lavabo Fountain Pavilion viewed from the exact original camera pose [0,0,0].
     </div>
   </div>
 
-  <!-- Main Workbench Grid -->
-  <main class="workbench-grid">
-    <!-- Left Column: Interactive 3D Viewport + 4-View Diagnostic Strip + Spatial Grounding Strip -->
-    <div class="left-col">
-      <section class="card">
-        <div class="card-header">
-          <div class="title-group">
-            <h2>Interactive 3D World Viewport</h2>
-            <span id="activeStageLabel" class="stage-badge">Stage: Awaiting Reconstruction</span>
+  <!-- Object Hover / Click Indicator HUD -->
+  <div class="object-hover-hud" id="objectHoverHud">
+    <span class="pulse-dot"></span>
+    <span id="hoverObjectName">Central Romanesque Wellhead</span>
+    <span style="color:#64748b;">· Click to alter history</span>
+  </div>
+
+  <!-- Cinematic Notification Toast -->
+  <div class="cinematic-toast" id="cinematicToast">
+    <span id="cinematicToastText">Returned to Present Viewpoint [0,0,0]</span>
+  </div>
+
+  <!-- ========================================================================
+       4. SIGNATURE BOTTOM TIMELINE (HERO INTERFACE)
+       Continuous draggable timeline with ticks, keyframes, branch switching & Return to Present
+       ======================================================================== -->
+  <nav class="cinematic-timeline-bar" id="cinematicTimelineBar">
+    <!-- Upper Lane: Timeline Branches & Return to Present Signature Action -->
+    <div class="timeline-upper-lane">
+      <div class="branch-selector-group">
+        <span class="timeline-lane-title">TIMELINE BRANCH:</span>
+        <button id="btnBranchOrig" class="branch-chip" title="Preserve and inspect the unaltered historical timeline (1206 draw-well -> 2026 baseline)">
+          <span class="branch-icon">🌿</span> Branch 0: Original Unaltered
+        </button>
+        <button id="btnBranchA" class="branch-chip active" title="Counterfactual Branch A: 1206 Gothic Monastic Lavabo Fountain Canopy">
+          <span class="branch-icon">⚡</span> Branch A: 1206 Lavabo Canopy
+        </button>
+        <button id="btnBranchB" class="branch-chip" title="Counterfactual Branch B: 1566 Renaissance Marble Balustrade & Bronze Astrolabe">
+          <span class="branch-icon">⚡</span> Branch B: 1566 Astrolabe
+        </button>
+        <button id="btnOpenInterveneModal" class="branch-chip" style="border-style:dashed;border-color:var(--accent-gold);" title="Intervene in history: click any object or enter an intervention prompt">
+          <span class="branch-icon">✨</span> + Intervene in History
+        </button>
+      </div>
+
+      <!-- Signature Moment: Prominent Return to Present Button -->
+      <button id="btnReturnToPresent" class="btn-return-present-hero" title="Animate forward through historical keyframes, restore camera [0,0,0], and reveal Alternate Present with comparison slider">
+        <span class="sparkle-icon">↺</span>
+        <span>RETURN TO PRESENT</span>
+      </button>
+    </div>
+
+    <!-- Lower Lane: Draggable Timeline Track with Century & Decade Ticks -->
+    <div class="timeline-track-wrap" id="timelineTrackWrap">
+      <div class="timeline-rail" id="timelineRail">
+        <div class="timeline-fill" id="timelineFill"></div>
+        
+        <!-- Century & Decade Ticks across 1100–2030 -->
+        <div class="timeline-ticks" id="timelineTicks">
+          <!-- 1100 -->
+          <div class="tick-mark century" style="left:0%"><span class="tick-label">1100</span></div>
+          <div class="tick-mark" style="left:5.3%"></div>
+          <!-- 1200 -->
+          <div class="tick-mark century" style="left:10.7%"><span class="tick-label">1200</span></div>
+          <div class="tick-mark" style="left:16.1%"></div>
+          <!-- 1300 -->
+          <div class="tick-mark century" style="left:21.5%"><span class="tick-label">1300</span></div>
+          <div class="tick-mark" style="left:26.8%"></div>
+          <!-- 1400 -->
+          <div class="tick-mark century" style="left:32.2%"><span class="tick-label">1400</span></div>
+          <div class="tick-mark" style="left:37.6%"></div>
+          <!-- 1500 -->
+          <div class="tick-mark century" style="left:43.0%"><span class="tick-label">1500</span></div>
+          <div class="tick-mark" style="left:48.3%"></div>
+          <!-- 1600 -->
+          <div class="tick-mark century" style="left:53.7%"><span class="tick-label">1600</span></div>
+          <div class="tick-mark" style="left:59.1%"></div>
+          <!-- 1700 -->
+          <div class="tick-mark century" style="left:64.5%"><span class="tick-label">1700</span></div>
+          <div class="tick-mark" style="left:69.8%"></div>
+          <!-- 1800 -->
+          <div class="tick-mark century" style="left:75.2%"><span class="tick-label">1800</span></div>
+          <div class="tick-mark" style="left:80.6%"></div>
+          <!-- 1900 -->
+          <div class="tick-mark century" style="left:86.0%"><span class="tick-label">1900</span></div>
+          <div class="tick-mark" style="left:91.3%"></div>
+          <!-- 2000 -->
+          <div class="tick-mark century" style="left:96.7%"><span class="tick-label">2000</span></div>
+        </div>
+      </div>
+
+      <!-- Major Historical Keyframe Nodes -->
+      <!-- Keyframe 1: 1206 -->
+      <div class="timeline-keyframe-node intervention-beacon" id="node1206" data-year="1206" data-stage="era1206" style="left:11.4%;" title="1206: Medieval Monastic Era (Gothic Lavabo Canopy)">
+        <div class="keyframe-beacon-pulse"></div>
+        <div class="keyframe-circle"><span class="keyframe-inner-dot"></span></div>
+        <div class="keyframe-caption">
+          <span class="keyframe-year">1206</span>
+          <span class="keyframe-era-name">Monastic</span>
+        </div>
+      </div>
+
+      <!-- Keyframe 2: 1566 -->
+      <div class="timeline-keyframe-node" id="node1566" data-year="1566" data-stage="era1566" style="left:50.1%;" title="1566: Renaissance Era Adaptation">
+        <div class="keyframe-beacon-pulse" style="display:none;"></div>
+        <div class="keyframe-circle"><span class="keyframe-inner-dot"></span></div>
+        <div class="keyframe-caption">
+          <span class="keyframe-year">1566</span>
+          <span class="keyframe-era-name">Renaissance</span>
+        </div>
+      </div>
+
+      <!-- Keyframe 3: 1938 -->
+      <div class="timeline-keyframe-node" id="node1938" data-year="1938" data-stage="era1938" style="left:90.1%;" title="1938: Met Cloisters Museum Reconstruction">
+        <div class="keyframe-circle"><span class="keyframe-inner-dot"></span></div>
+        <div class="keyframe-caption">
+          <span class="keyframe-year">1938</span>
+          <span class="keyframe-era-name">Museum</span>
+        </div>
+      </div>
+
+      <!-- Keyframe 4: 2026 -->
+      <div class="timeline-keyframe-node active" id="node2026" data-year="2026" data-stage="alt2026" style="left:99.5%;" title="2026: Present Day Viewpoint">
+        <div class="keyframe-circle"><span class="keyframe-inner-dot"></span></div>
+        <div class="keyframe-caption">
+          <span class="keyframe-year">2026</span>
+          <span class="keyframe-era-name">Present</span>
+        </div>
+      </div>
+
+      <!-- Draggable Scrub Handle -->
+      <div class="timeline-scrub-handle" id="timelineScrubHandle" style="left:99.5%;">
+        <div class="scrub-floating-badge" id="scrubFloatingBadge">2026 AD</div>
+      </div>
+
+      <!-- Hidden accessible native slider input (keyboard arrow keys & touch) -->
+      <input type="range" id="timeScrubberRange" class="accessible-timeline-slider" min="0" max="3" step="1" value="3" aria-label="Timeline Scrubber (1206, 1566, 1938, 2026)" />
+      <span id="timeScrubberLabel" style="display:none;">2026 (Present)</span>
+    </div>
+  </nav>
+
+  <!-- ========================================================================
+       5. CONTEXTUAL HISTORICAL INTERVENTION CARD ("What would you change?")
+       ======================================================================== -->
+  <div class="intervention-modal-card" id="interventionModalCard">
+    <div class="intervention-card-header">
+      <div class="intervention-obj-meta">
+        <span class="intervention-obj-tag" id="interveneObjTag">Historical Object Target</span>
+        <h2 class="intervention-obj-name" id="interveneObjName">Central Carved Wellhead</h2>
+      </div>
+      <button class="btn-card-close" id="btnCloseInterveneModal" title="Close">✕</button>
+    </div>
+
+    <div class="intervention-prompt-title">What would you change?</div>
+
+    <textarea
+      id="interventionInput"
+      class="intervention-textarea"
+      placeholder="Describe a historical change to propagate across epochs..."
+    >In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.</textarea>
+
+    <!-- Suggested Historical Changes -->
+    <div class="preset-ideas-group">
+      <span class="preset-ideas-label">Historical Counterfactual Ideas:</span>
+      <div id="suggestedInterventionsBar" style="display:flex;flex-direction:column;gap:5px;">
+        <button class="preset-idea-pill" data-idea="In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.">
+          🌿 <strong>1206 Medieval Monastic:</strong> Gothic bronze &amp; limestone lavabo fountain canopy
+        </button>
+        <button class="preset-idea-pill" data-idea="In 1566 (Renaissance Adaptation), install an ornate carved marble balustrade and bronze astrolabe sundial monument in the central courtyard.">
+          🏛️ <strong>1566 Renaissance:</strong> Carrara marble balustrade &amp; bronze celestial astrolabe
+        </button>
+        <button class="preset-idea-pill" data-idea="In 1906 (Beaux-Arts Conservatory Era), erect a wrought-iron and stained-glass botanical conservatory dome over the central cloister garden.">
+          ✨ <strong>1906 Beaux-Arts:</strong> Wrought-iron botanical conservatory glass pavilion
+        </button>
+      </div>
+    </div>
+
+    <div class="intervention-actions">
+      <button id="btnCancelIntervene" class="glass-pill-btn">Cancel</button>
+      <button id="btnApplyIntervention" class="btn-primary-action">
+        <span>⚡ Propagate Causal History</span>
+      </button>
+    </div>
+
+    <!-- Live Streaming Progress Bar -->
+    <div id="propagationProgressBox" class="propagation-progress-box" style="display: none;">
+      <div class="propagation-spinner"></div>
+      <div class="propagation-status-text" id="propagationStatusText">
+        Propagating consequences across centuries with Gemini 4 Argon...
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       6. CAUSAL ANCESTRY STEP TRAIL ("You changed this in 1206 -> ...")
+       ======================================================================== -->
+  <div class="causal-ancestry-card" id="causalAncestryPopover" style="display: none;">
+    <div class="ancestry-card-header">
+      <div>
+        <span class="ancestry-badge" id="ancestryStatusBadge">CAUSALLY TRANSFORMED MONUMENT</span>
+        <h3 class="ancestry-object-title" id="ancestryObjectTitle">Cast-Bronze Lustration Column &amp; Lavabo Canopy</h3>
+      </div>
+      <button class="btn-card-close" id="btnCloseAncestryPopover" title="Close">✕</button>
+    </div>
+
+    <div id="ancestryPersistentId" style="font-family:var(--font-mono);font-size:10px;color:var(--text-tertiary);">
+      Mesh: Lavabo_Central_Bronze_Pillar · Persistent ID: central_carved_wellhead
+    </div>
+
+    <div style="padding:8px 10px;background:rgba(245,158,11,0.08);border-left:3px solid var(--accent-gold);border-radius:4px;">
+      <div style="font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--accent-gold);">Triggering Historical Intervention</div>
+      <div id="ancestryInterventionText" style="font-size:11px;color:#e2e8f0;margin-top:2px;"></div>
+    </div>
+
+    <!-- Step-by-Step Ancestry Progression -->
+    <div>
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--accent-cyan);margin-bottom:8px;">
+        Multi-Century Causal Evolution (1206 → 2026)
+      </div>
+      <div class="ancestry-trail-list" id="ancestryEvolutionList">
+        <!-- Injected dynamically as visual step trail -->
+      </div>
+    </div>
+
+    <div style="font-size:11px;color:var(--text-secondary);">
+      <strong style="color:#cbd5e1;">Structural Constraints:</strong>
+      <span id="ancestryAssumptionsText"></span>
+    </div>
+
+    <div class="ancestry-card-footer">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button id="btnDirectInterveneLavabo" class="glass-pill-btn" style="padding:4px 8px;font-size:10px;">⚡ Branch A (1206)</button>
+        <button id="btnDirectInterveneAstrolabe" class="glass-pill-btn" style="padding:4px 8px;font-size:10px;">⚡ Branch B (1566)</button>
+        <button id="btnDirectScaleUp" class="glass-pill-btn" style="padding:4px 8px;font-size:10px;">🔼 Scale +15%</button>
+        <button id="btnDirectRotateObj" class="glass-pill-btn" style="padding:4px 8px;font-size:10px;">🔄 Rotate 22.5°</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       7. COLLAPSIBLE DEVELOPER MODE DRAWER
+       Engineering Workbench, 4-View Critic Screenshots, Quantitative Metrics,
+       Bpy Code Diff Editor, Telemetry Logs, Spatial Grounding & Art Director
+       ======================================================================== -->
+  <div class="dev-drawer-backdrop" id="devDrawerBackdrop"></div>
+
+  <aside class="dev-drawer-panel" id="devDrawerPanel">
+    <div class="dev-drawer-header">
+      <div class="dev-drawer-title-group">
+        <h2 class="dev-drawer-title">Engineering Developer Mode</h2>
+        <span id="statusBadge" class="status-pill status-idle">Ready</span>
+      </div>
+      <button class="btn-card-close" id="btnCloseDevDrawer" title="Close Developer Mode (Esc)">✕</button>
+    </div>
+
+    <div class="dev-drawer-body">
+      <!-- Workflow Execution Action Bar -->
+      <div class="drawer-card">
+        <div class="drawer-card-header">
+          <h3>Autonomous Closed-Loop Pipeline</h3>
+          <span id="modelMetaInfo" style="font-size:10px;font-family:var(--font-mono);color:var(--text-secondary);">gemini-4-argon + MoGe-2 + Blender 4.1 bpy</span>
+        </div>
+        <div class="drawer-card-body" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="drawer-actions-bar">
+            <button id="btnRunDemoLoop" class="btn-dev btn-dev-primary">▶ Run Full MVP3 Autonomous Loop</button>
+            <button id="btnStep1Ground" class="btn-dev">1. MoGe-2 Grounding</button>
+            <button id="btnStep2AuthorR1" class="btn-dev" disabled>2. Author 3D (R1)</button>
+            <button id="btnStep3Critic" class="btn-dev" disabled>3. 4-View Critic</button>
+            <button id="btnStep4RewriteR2" class="btn-dev" disabled>4. Rewrite (R2)</button>
+            <button id="btnStep5Causal" class="btn-dev" disabled>5. Causal Simulation</button>
           </div>
 
-          <div class="viewport-toolbar">
-            <div class="stage-switcher" id="stageSwitcher">
-              <button data-stage="round1" class="btn-chip">Round 1 (Initial bpy)</button>
-              <button data-stage="round2" class="btn-chip active">Round 2 (Rewritten bpy)</button>
-              <button data-stage="era1206" class="btn-chip">Era 1 (1206)</button>
-              <button data-stage="era1566" class="btn-chip">Era 2 (1566)</button>
-              <button data-stage="era1938" class="btn-chip">Era 3 (1938)</button>
-              <button data-stage="alt2026" class="btn-chip">Alt 2026</button>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--border-subtle);">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <label for="sampleSelect" style="color:var(--text-secondary);font-size:11px;">Scene:</label>
+              <select id="sampleSelect" style="background:#0b0f17;color:#fff;border:1px solid var(--border-subtle);border-radius:4px;padding:3px 6px;font-size:11px;">
+                <option value="samples/cloister_courtyard.jpg" selected>Unseen: Cloister Courtyard</option>
+                <option value="samples/living_room.jpg">Baseline: Modern Living Room</option>
+                <option value="samples/dining_room.jpg">Baseline: Historic Dining Room</option>
+              </select>
             </div>
 
-            <div class="stage-switcher" id="camViewSwitcher" title="Switch between the 4 Diagnostic Critic Camera Angles">
-              <button data-cam="originalCam" class="btn-chip btn-accent">Cam 1: Orig [0,0,0]</button>
-              <button data-cam="threeQuarter" class="btn-chip">Cam 2: 3/4 Overview</button>
-              <button data-cam="lowAngle" class="btn-chip">Cam 3: Low Ground</button>
-              <button data-cam="wireframe" class="btn-chip">Cam 4: Wireframe</button>
-            </div>
-
-            <label class="toggle-chip" title="Toggle interactive split wipe comparison: ORIGINAL PHOTO | 3D SCENE AT [0,0,0]">
-              <input type="checkbox" id="toggleSplitSlider" />
-              <span>Split: PHOTO | 3D</span>
+            <label class="btn-dev" style="cursor:pointer;">
+              <span>Upload Photo</span>
+              <input type="file" id="photoInput" accept="image/*" style="display:none;" />
             </label>
-            <label class="toggle-chip" title="Show/hide MoGe-2 observed point-cloud mesh behind generated Blender 3D architecture">
+
+            <div style="display:flex;align-items:center;gap:6px;">
+              <label for="thinkingLevelSelect" style="color:var(--text-secondary);font-size:11px;">Thinking:</label>
+              <select id="thinkingLevelSelect" style="background:#0b0f17;color:#fff;border:1px solid var(--border-subtle);border-radius:4px;padding:3px 6px;font-size:11px;">
+                <option value="LOW">LOW</option>
+                <option value="MEDIUM" selected>MEDIUM</option>
+                <option value="HIGH">HIGH</option>
+              </select>
+            </div>
+
+            <a href="/progress.html" target="_blank" class="btn-dev">Gallery ↗</a>
+            <a href="/mvp2" class="btn-dev">MVP2</a>
+            <a href="/mvp1" class="btn-dev">MVP1</a>
+          </div>
+
+          <!-- Stage Switcher & Viewport Toggles for Debugging -->
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--border-subtle);">
+            <span style="font-size:10px;font-weight:700;color:var(--text-tertiary);">STAGE:</span>
+            <div id="stageSwitcher" style="display:flex;gap:4px;flex-wrap:wrap;">
+              <button data-stage="round1" class="btn-dev">R1 bpy</button>
+              <button data-stage="round2" class="btn-dev">R2 Verified</button>
+              <button data-stage="era1206" class="btn-dev">1206</button>
+              <button data-stage="era1566" class="btn-dev">1566</button>
+              <button data-stage="era1938" class="btn-dev">1938</button>
+              <button data-stage="alt2026" class="btn-dev">Alt 2026</button>
+            </div>
+            <span id="activeStageLabel" style="font-size:10px;color:var(--text-secondary);margin-left:auto;">Stage: Awaiting</span>
+          </div>
+
+          <div style="display:flex;gap:12px;align-items:center;font-size:11px;color:var(--text-secondary);">
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
               <input type="checkbox" id="toggleMogeBackdrop" checked />
-              <span>Observed MoGe-2 Mesh</span>
+              <span>Observed MoGe-2 Point Cloud</span>
             </label>
-            <label class="toggle-chip" title="Show/hide inferred &amp; procedurally authored Blender 4.1 3D GLB architecture">
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
               <input type="checkbox" id="toggleBlenderGlb" checked />
-              <span>Generated Blender 3D</span>
+              <span>Generated Blender 3D Mesh</span>
             </label>
           </div>
         </div>
+      </div>
 
-        <!-- 3D Viewport Container -->
-        <div class="viewport-container" id="viewportContainer">
-          <canvas id="threeCanvas"></canvas>
+      <!-- API Error Report Banner -->
+      <div id="apiErrorBanner" class="api-error-banner" style="display: none;">
+        <div class="error-header">
+          <strong>API Error Report</strong>
+          <button id="btnDismissError" class="btn-dev" style="padding:2px 6px;font-size:10px;">Dismiss</button>
+        </div>
+        <pre id="apiErrorText"></pre>
+      </div>
 
-          <!-- Interactive Split Comparison Overlay -->
-          <div id="splitCompareOverlay" class="split-compare-overlay" style="display: none;">
-            <div id="splitLeftClip" class="split-left-clip">
-              <img id="splitOriginalImg" alt="Original Reference View" />
-              <div id="splitLeftBadge" class="split-badge split-badge-left">ORIGINAL PHOTOGRAPH [0,0,0]</div>
+      <!-- Closed-Loop Quantitative Verification Metrics -->
+      <div class="drawer-card">
+        <div class="drawer-card-header">
+          <h3>Closed-Loop Quantitative Verification (Round 1 → Round 2)</h3>
+        </div>
+        <div class="drawer-card-body">
+          <div class="metrics-grid">
+            <div class="metric-box">
+              <span class="metric-label">1. Critic Score</span>
+              <strong id="metricCriticScore" class="metric-value">—</strong>
+              <span id="metricCriticSub" class="metric-sub">R1 vs R2 (/10)</span>
             </div>
-            <div id="splitRightBadge" class="split-badge split-badge-right">LIVE 3D SCENE RENDER [0,0,0]</div>
-            <div id="splitDividerLine" class="split-divider-line">
-              <div class="split-handle">⇄</div>
+            <div class="metric-box">
+              <span class="metric-label">2. 3D Complexity</span>
+              <strong id="metricMeshComplexity" class="metric-value">—</strong>
+              <span id="metricMeshSub" class="metric-sub">Objects | Verts | Tris</span>
             </div>
-            <input type="range" id="splitSliderInput" class="split-slider-input" min="0" max="100" value="50" />
+            <div class="metric-box">
+              <span class="metric-label">3. Ground Contact</span>
+              <strong id="metricGroundContact" class="metric-value">—</strong>
+              <span id="metricGroundSub" class="metric-sub">Elevation Error (m)</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">4. Registration</span>
+              <strong id="metricVisualFidelity" class="metric-value">—</strong>
+              <span id="metricVisualSub" class="metric-sub">SSIM / PSNR at [0,0,0]</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">5. Code Rewrite Delta</span>
+              <strong id="metricCodeDelta" class="metric-value">—</strong>
+              <span id="metricCodeSub" class="metric-sub">Lines Added / Removed</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">6. Stage Latencies</span>
+              <strong id="metricLatencies" class="metric-value">—</strong>
+              <span id="metricLatencySub" class="metric-sub">Blender &amp; Argon (ms)</span>
+            </div>
           </div>
+        </div>
+      </div>
 
-          <!-- Top-Left Telemetry HUD (Hidden automatically during 4-view critic screenshot capture) -->
-          <div id="viewportHudTop" class="hud-top-left">
-            <div id="hudCameraPose">Cam: [0.00, 0.00, 0.00] | FOV: 98.8°</div>
-            <div id="hudGeometryInfo">
-              <span class="obs-dot">●</span> Observed: MoGe-2 Point Cloud | <span class="inf-dot">●</span> Inferred: Argon Blender 4.1 GLB
-            </div>
-            <div id="hudTimelineState">Round: — | Critic Score: —</div>
-            <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;pointer-events:auto;">
-              <button id="btnInspectMonumentAncestry" class="btn-chip" style="font-size:10px;padding:2px 7px;background:rgba(16,185,129,0.22);border-color:#10b981;color:#6ee7b7;">
-                🔍 Explain Changed Monument Ancestry
-              </button>
-              <button id="btnInspectArcadeAncestry" class="btn-chip" style="font-size:10px;padding:2px 7px;">
-                🏛️ Inspect Invariant Arcade Anchor
-              </button>
-            </div>
+      <!-- Workflow #3: 4-View Adversarial Critic Diagnostic Screenshots -->
+      <div class="drawer-card">
+        <div class="drawer-card-header">
+          <h3>Workflow #3: 4-View Adversarial Critic Screenshots</h3>
+          <div style="display:flex;gap:4px;">
+            <button id="btnShowR1Shots" class="btn-dev" style="padding:2px 8px;font-size:10px;">Round 1</button>
+            <button id="btnShowR2Shots" class="btn-dev" style="padding:2px 8px;font-size:10px;">Round 2</button>
           </div>
-
-          <!-- Pillar 3 & 7: Floating 3D Raycast Object Causal Ancestry & Direct Past Manipulation Card -->
-          <div
-            id="causalAncestryPopover"
-            style="display:none;position:absolute;top:14px;right:14px;width:365px;max-height:82%;overflow-y:auto;background:rgba(15,23,42,0.94);border:1px solid #38bdf8;border-radius:10px;padding:12px 14px;z-index:26;box-shadow:0 12px 30px rgba(0,0,0,0.65);backdrop-filter:blur(10px);color:#f8fafc;font-size:12px;"
-          >
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-              <span id="ancestryStatusBadge" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;background:#059669;color:#ecfdf5;">
-                CAUSALLY TRANSFORMED MONUMENT
-              </span>
-              <button id="btnCloseAncestryPopover" class="btn-chip" style="padding:1px 6px;font-size:11px;">✕</button>
-            </div>
-            <div id="ancestryObjectTitle" style="font-weight:700;font-size:13px;color:#38bdf8;margin-bottom:2px;">
-              Cast-Bronze Lustration Column &amp; Lavabo Canopy
-            </div>
-            <div id="ancestryPersistentId" style="font-family:monospace;font-size:10px;color:#94a3b8;margin-bottom:8px;">
-              Mesh: Lavabo_Central_Bronze_Pillar • Persistent ID: central_carved_wellhead
-            </div>
-            <div style="margin-bottom:8px;padding:7px;background:rgba(30,41,59,0.75);border-left:3px solid #f59e0b;border-radius:4px;">
-              <div style="font-size:10px;font-weight:700;color:#fbbf24;text-transform:uppercase;">Triggering Past Intervention</div>
-              <div id="ancestryInterventionText" style="font-size:11px;color:#e2e8f0;margin-top:2px;"></div>
-            </div>
-            <div style="margin-bottom:8px;">
-              <div style="font-size:10px;font-weight:700;color:#38bdf8;text-transform:uppercase;margin-bottom:4px;">
-                Multi-Century Causal Evolution (1206 → 2026)
-              </div>
-              <ul id="ancestryEvolutionList" style="margin:0;padding-left:16px;font-size:11px;color:#cbd5e1;line-height:1.45;"></ul>
-            </div>
-            <div style="margin-bottom:10px;font-size:11px;color:#94a3b8;">
-              <strong style="color:#cbd5e1;">Causal &amp; Structural Assumptions:</strong>
-              <span id="ancestryAssumptionsText"></span>
-            </div>
-            <div style="border-top:1px solid #1e293b;padding-top:8px;">
-              <div style="font-size:10px;font-weight:700;color:#a78bfa;text-transform:uppercase;margin-bottom:6px;">
-                Direct 3D Object Manipulation &amp; Past Intervention
-              </div>
-              <div style="display:flex;flex-wrap:wrap;gap:5px;">
-                <button id="btnDirectInterveneLavabo" class="btn-chip" style="font-size:10px;border-color:#10b981;color:#6ee7b7;">
-                  ⚡ 1206 Gothic Lavabo (Branch A)
-                </button>
-                <button id="btnDirectInterveneAstrolabe" class="btn-chip" style="font-size:10px;border-color:#f59e0b;color:#fde68a;">
-                  ⚡ 1566 Bronze Astrolabe (Branch B)
-                </button>
-                <button id="btnDirectScaleUp" class="btn-chip" style="font-size:10px;">
-                  🔼 Scale +15%
-                </button>
-                <button id="btnDirectRotateObj" class="btn-chip" style="font-size:10px;">
-                  🔄 Rotate +22.5°
-                </button>
+        </div>
+        <div class="drawer-card-body">
+          <div class="comparison-grid" style="grid-template-columns: repeat(4, 1fr);">
+            <div class="compare-slot">
+              <div class="slot-header"><span>1. Orig [0,0,0]</span><span id="metaViewOrig" class="slot-meta">1:1</span></div>
+              <div class="slot-img-wrap">
+                <img id="imgViewOrig" alt="Original Camera" style="display:none;" />
+                <div id="emptyViewOrig" class="empty-placeholder">Awaiting R1</div>
               </div>
             </div>
-          </div>
-
-          <!-- Bottom Navigation Controls -->
-          <div id="viewportHudBottom" class="hud-bottom-controls">
-            <div class="nav-dpad">
-              <button data-move="forward" title="Move Forward (W)">W ↑</button>
-              <button data-move="left" title="Strafe Left (A)">← A</button>
-              <button data-move="back" title="Move Back (S)">S ↓</button>
-              <button data-move="right" title="Strafe Right (D)">D →</button>
-              <button data-move="up" title="Move Up (E)">Up</button>
-              <button data-move="down" title="Move Down (Q)">Down</button>
+            <div class="compare-slot">
+              <div class="slot-header"><span>2. 3/4 Overview</span><span id="metaView34" class="slot-meta">3D</span></div>
+              <div class="slot-img-wrap">
+                <img id="imgView34" alt="3/4 Overview" style="display:none;" />
+                <div id="emptyView34" class="empty-placeholder">Awaiting R1</div>
+              </div>
             </div>
-            <div class="nav-hint">Click Any 3D Object to Inspect Causal Ancestry or Manipulate • Drag to Orbit • WASD to Fly</div>
-          </div>
-        </div>
-
-        <!-- TIME TRAVEL Scrubber, Branch Manager, Return to Present & Art Director Deck -->
-        <div class="timetravel-deck">
-          <!-- Pillar 2, 5 & 8: Interactive Time-Travel Scrubber, Branch Switcher & Return to Present [0,0,0] -->
-          <div
-            class="timeline-row"
-            style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding-bottom:8px;border-bottom:1px solid #1e293b;"
-          >
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <strong style="color:#f59e0b;font-size:11px;letter-spacing:0.04em;">⏳ TIME TRAVEL SCRUBBER:</strong>
-              <input
-                type="range"
-                id="timeScrubberRange"
-                min="0"
-                max="3"
-                step="1"
-                value="3"
-                style="width:155px;accent-color:#f59e0b;cursor:pointer;"
-                title="Scrub backward &amp; forward across 820 years (1206 ↔ 1566 ↔ 1938 ↔ 2026) — actual 3D geometry transforms!"
-              />
-              <span id="timeScrubberLabel" style="font-family:monospace;font-size:12px;font-weight:700;color:#fde68a;">
-                2026 (Present Viewpoint)
-              </span>
+            <div class="compare-slot">
+              <div class="slot-header"><span>3. Low Ground</span><span id="metaViewLow" class="slot-meta">Ground</span></div>
+              <div class="slot-img-wrap">
+                <img id="imgViewLow" alt="Low Ground" style="display:none;" />
+                <div id="emptyViewLow" class="empty-placeholder">Awaiting R1</div>
+              </div>
             </div>
-
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-              <span style="font-size:11px;color:#94a3b8;font-weight:600;">Timeline Branch:</span>
-              <button id="btnBranchOrig" class="btn-chip" title="Preserve &amp; inspect the unaltered historical timeline (1206 draw-well -> 2026 baseline)">
-                🌿 Branch 0: Original Unaltered
-              </button>
-              <button id="btnBranchA" class="btn-chip active" title="Counterfactual Branch A: 1206 Gothic Monastic Lavabo Fountain Canopy">
-                ⚡ Branch A: 1206 Lavabo Canopy
-              </button>
-              <button id="btnBranchB" class="btn-chip" title="Counterfactual Branch B: 1566 Renaissance Marble Balustrade &amp; Bronze Astrolabe">
-                ⚡ Branch B: 1566 Bronze Astrolabe
-              </button>
-              <button
-                id="btnReturnToPresent"
-                class="btn btn-primary"
-                style="padding:5px 12px;font-size:11px;font-weight:700;background:linear-gradient(135deg,#0ea5e9,#10b981);border:none;"
-                title="Restore exact original MoGe-2 camera pose [0,0,0] and reveal the Alternate 2026 Present with Split Comparison"
-              >
-                ⏪ RETURN TO PRESENT [0,0,0]
-              </button>
-            </div>
-          </div>
-
-          <div class="timeline-row" style="flex-wrap:wrap;gap:12px;">
-            <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:#cbd5e1;">
-              <strong style="color:#38bdf8;">ART DIRECTOR CONTROLS (Workflow #4):</strong>
-              <label>Sun Angle: <input type="range" id="ctrlSunAngle" min="0" max="360" value="42" style="width:70px;vertical-align:middle;" /></label>
-              <label>Light Int: <input type="range" id="ctrlLightIntensity" min="20" max="250" value="125" style="width:70px;vertical-align:middle;" /></label>
-              <label>Roughness: <input type="range" id="ctrlRoughness" min="10" max="100" value="55" style="width:65px;vertical-align:middle;" /></label>
-              <label>Photo Mesh α: <input type="range" id="ctrlPhotoOpacity" min="0" max="100" value="88" style="width:65px;vertical-align:middle;" /></label>
-              <button id="btnCopySettingsJson" class="btn-chip" title="Copy preferred lighting, material &amp; camera settings as JSON">📋 Copy Settings JSON</button>
-            </div>
-          </div>
-
-          <div class="intervention-row">
-            <div class="intervention-input-group">
-              <input
-                type="text"
-                id="interventionInput"
-                value="In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams."
-                placeholder="Enter a historical intervention to propagate across epochs after 3D scene verification..."
-              />
-              <button id="btnApplyIntervention" class="btn btn-timetravel">⚡ Propagate Multi-Epoch Causal 3D</button>
-            </div>
-            <div class="suggested-chips" id="suggestedInterventionsBar">
-              <span class="chip-hint">Suggested Interventions:</span>
+            <div class="compare-slot">
+              <div class="slot-header"><span>4. Wireframe</span><span id="metaViewWire" class="slot-meta">Topology</span></div>
+              <div class="slot-img-wrap">
+                <img id="imgViewWire" alt="Wireframe" style="display:none;" />
+                <div id="emptyViewWire" class="empty-placeholder">Awaiting R1</div>
+              </div>
             </div>
           </div>
         </div>
-      </section>
+      </div>
 
-      <!-- Workflow #3: 4-View Adversarial Critic Diagnostic Strip (Round 1 vs Round 2 Toggle) -->
-      <section class="card">
-        <div class="card-header">
-          <div>
-            <h2>Workflow #3: 4-View Adversarial Critic Diagnostic Screenshots (Actual Captures)</h2>
-            <span class="subtle-note">Independent Critic inspects all 4 views (with UI hidden) to identify ≥3 genuine deficiencies before Round 2 code rewrite</span>
-          </div>
-          <div class="stage-switcher">
-            <button id="btnShowR1Shots" class="btn-chip">Inspect Round 1 Views</button>
-            <button id="btnShowR2Shots" class="btn-chip active">Inspect Round 2 (Rewritten) Views</button>
-          </div>
+      <!-- Spatial Grounding Strip -->
+      <div class="drawer-card">
+        <div class="drawer-card-header">
+          <h3>Workflow #5 &amp; #6: Spatial Grounding &amp; Depth</h3>
         </div>
-        <div class="comparison-grid" style="grid-template-columns: repeat(4, 1fr);">
-          <div class="compare-slot">
-            <div class="slot-header">
-              <span>1. Original Camera [0,0,0]</span>
-              <span id="metaViewOrig" class="slot-meta">1:1 Registration</span>
+        <div class="drawer-card-body">
+          <div class="comparison-grid" style="grid-template-columns: repeat(4, 1fr);">
+            <div class="compare-slot">
+              <div class="slot-header"><span>A. Metric Grid</span><span id="metaGridOverlay" class="slot-meta">X/Y</span></div>
+              <div class="slot-img-wrap">
+                <img id="imgGridOverlay" src="samples/cloister_grid_overlay.png" alt="X/Y Grid" />
+              </div>
             </div>
-            <div class="slot-img-wrap">
-              <img id="imgViewOrig" alt="Original Camera Render" style="display: none;" />
-              <div id="emptyViewOrig" class="empty-placeholder">Awaiting Round 1</div>
+            <div class="compare-slot">
+              <div class="slot-header"><span>B. 2D Floorplan</span><span id="metaFloorplan" class="slot-meta">SVG</span></div>
+              <div class="slot-img-wrap">
+                <img id="imgFloorplanSvg" src="samples/cloister_floorplan.svg" alt="2D Floorplan" />
+              </div>
             </div>
-          </div>
-
-          <div class="compare-slot">
-            <div class="slot-header">
-              <span>2. 3/4 Overview</span>
-              <span id="metaView34" class="slot-meta">3D Composition</span>
+            <div class="compare-slot">
+              <div class="slot-header"><span>C. MoGe-2 Depth</span><span id="depthRangeMeta" class="slot-meta">1.44m–16.66m</span></div>
+              <div class="slot-img-wrap">
+                <img id="imgDepthMap" alt="Depth Map" style="display:none;" />
+                <div id="emptyDepthMap" class="empty-placeholder">Run Step 1</div>
+              </div>
             </div>
-            <div class="slot-img-wrap">
-              <img id="imgView34" alt="3/4 Overview Render" style="display: none;" />
-              <div id="emptyView34" class="empty-placeholder">Awaiting Round 1</div>
-            </div>
-          </div>
-
-          <div class="compare-slot">
-            <div class="slot-header">
-              <span>3. Low Ground Angle</span>
-              <span id="metaViewLow" class="slot-meta">Ground Contact</span>
-            </div>
-            <div class="slot-img-wrap">
-              <img id="imgViewLow" alt="Low Ground Angle Render" style="display: none;" />
-              <div id="emptyViewLow" class="empty-placeholder">Awaiting Round 1</div>
-            </div>
-          </div>
-
-          <div class="compare-slot">
-            <div class="slot-header">
-              <span>4. 3D Wireframe View</span>
-              <span id="metaViewWire" class="slot-meta">Mesh Topology</span>
-            </div>
-            <div class="slot-img-wrap">
-              <img id="imgViewWire" alt="3D Wireframe Render" style="display: none;" />
-              <div id="emptyViewWire" class="empty-placeholder">Awaiting Round 1</div>
+            <div class="compare-slot">
+              <div class="slot-header"><span>D. Target Render</span><span id="metaNanoTarget" class="slot-meta">Target</span></div>
+              <div class="slot-img-wrap">
+                <img id="imgNanoTarget" src="samples/cloister_target_render.jpg" alt="Target Render" />
+              </div>
             </div>
           </div>
         </div>
-      </section>
+      </div>
 
-      <!-- Workflow #5 & #6: Spatial Grounding & Nano Banana Reference Strip (4 Slots) -->
-      <section class="card">
-        <div class="card-header">
-          <h2>Workflow #5 &amp; #6: Spatial Grounding (X/Y Grid, 2D Metric Floorplan, MoGe-2 Depth &amp; Nano Banana Target)</h2>
-          <span class="subtle-note">Distinguishes Observed MoGe-2 Point Cloud from Inferred 3D Volumetric Extrusions</span>
-        </div>
-        <div class="comparison-grid" style="grid-template-columns: repeat(4, 1fr);">
-          <div class="compare-slot">
-            <div class="slot-header">
-              <span>A. Annotated X/Y Metric Grid</span>
-              <span id="metaGridOverlay" class="slot-meta">Horizon &amp; Bounds</span>
-            </div>
-            <div class="slot-img-wrap">
-              <img id="imgGridOverlay" src="samples/cloister_grid_overlay.png" alt="Annotated X/Y Grid" />
-            </div>
-          </div>
-
-          <div class="compare-slot">
-            <div class="slot-header">
-              <span>B. Top-Down 2D Floorplan (.svg)</span>
-              <span id="metaFloorplan" class="slot-meta">Observed vs Inferred</span>
-            </div>
-            <div class="slot-img-wrap">
-              <img id="imgFloorplanSvg" src="samples/cloister_floorplan.svg" alt="Top-Down 2D Metric Floorplan SVG" />
-            </div>
-          </div>
-
-          <div class="compare-slot">
-            <div class="slot-header">
-              <span>C. MoGe-2 Metric Depth</span>
-              <span id="depthRangeMeta" class="slot-meta">1.44m–16.66m</span>
-            </div>
-            <div class="slot-img-wrap">
-              <img id="imgDepthMap" alt="MoGe-2 Depth Map" style="display: none;" />
-              <div id="emptyDepthMap" class="empty-placeholder">Run Step 1</div>
-            </div>
-          </div>
-
-          <div class="compare-slot">
-            <div class="slot-header">
-              <span>D. Nano Banana Target Render</span>
-              <span id="metaNanoTarget" class="slot-meta">Photoreal Reference</span>
-            </div>
-            <div class="slot-img-wrap">
-              <img id="imgNanoTarget" src="samples/cloister_target_render.jpg" alt="Nano Banana Target Render" />
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
-
-    <!-- Right Column: Measured Improvement Telemetry + Adversarial Critic + Code Diff + Causal Inspector -->
-    <div class="right-col">
-      <section class="card">
-        <div class="card-header">
-          <h2>Closed-Loop Quantitative Verification (Round 1 → Round 2 Improvement)</h2>
-          <span class="subtle-note">Measured from actual Blender 4.1 geometry telemetry, 4-view critic scores &amp; pixel registration</span>
-        </div>
-        <div class="metrics-grid">
-          <div class="metric-box">
-            <span class="metric-label">1. Adversarial Critic Score</span>
-            <strong id="metricCriticScore" class="metric-value">—</strong>
-            <span id="metricCriticSub" class="metric-sub">Round 1 vs Round 2 (/10)</span>
-          </div>
-          <div class="metric-box">
-            <span class="metric-label">2. 3D Mesh Complexity (bpy)</span>
-            <strong id="metricMeshComplexity" class="metric-value">—</strong>
-            <span id="metricMeshSub" class="metric-sub">Objects | Verts | Triangles</span>
-          </div>
-          <div class="metric-box">
-            <span class="metric-label">3. Ground-Contact Precision</span>
-            <strong id="metricGroundContact" class="metric-value">—</strong>
-            <span id="metricGroundSub" class="metric-sub">Floor Elevation Error (m)</span>
-          </div>
-          <div class="metric-box">
-            <span class="metric-label">4. Same-Cam Registration</span>
-            <strong id="metricVisualFidelity" class="metric-value">—</strong>
-            <span id="metricVisualSub" class="metric-sub">SSIM / PSNR at Pose [0,0,0]</span>
-          </div>
-          <div class="metric-box">
-            <span class="metric-label">5. Code Rewrite Delta</span>
-            <strong id="metricCodeDelta" class="metric-value">—</strong>
-            <span id="metricCodeSub" class="metric-sub">Lines Added / Modified in R2</span>
-          </div>
-          <div class="metric-box">
-            <span class="metric-label">6. Stage Latency Breakdown</span>
-            <strong id="metricLatencies" class="metric-value">—</strong>
-            <span id="metricLatencySub" class="metric-sub">MoGe-2 | Argon | Blender 4.1</span>
-          </div>
-        </div>
-      </section>
-
-      <!-- Tabbed Inspector -->
-      <section class="card">
+      <!-- Tabbed Deep Inspector -->
+      <div class="drawer-card">
         <div class="tabs-header">
-          <button class="tab-btn active" data-tab="tabCritic">Adversarial Critic &amp; Fixes</button>
-          <button class="tab-btn" data-tab="tabCodeDiff">Generated bpy Code (R1 vs R2)</button>
-          <button class="tab-btn" data-tab="tabCausal">Multi-Epoch Causal Simulation</button>
-          <button class="tab-btn" data-tab="tabLogs">Execution &amp; Telemetry Logs</button>
+          <button class="tab-btn active" data-tab="tabCritic">Adversarial Critic</button>
+          <button class="tab-btn" data-tab="tabCodeDiff">Blender Python (bpy)</button>
+          <button class="tab-btn" data-tab="tabCausal">Causal Simulation</button>
+          <button class="tab-btn" data-tab="tabLogs">Execution Logs</button>
+          <button class="tab-btn" data-tab="tabArtDirector">Art Director</button>
         </div>
 
-        <!-- Tab 1: Independent Adversarial Critic & Closed-Loop Fixes -->
         <div id="tabCritic" class="tab-panel">
-          <div id="criticReportContainer" class="discrepancies-list">
-            <div class="empty-state">
-              Run Steps 1–4 to execute Round 1 scene-specific 3D authoring, capture the 4 diagnostic screenshots, run the independent Adversarial Critic, and rewrite the Blender Python code in Round 2.
-            </div>
+          <div id="criticReportContainer">
+            <div class="empty-placeholder">Run Steps 1–4 to execute Round 1 and Round 2 critic reports.</div>
           </div>
         </div>
 
-        <!-- Tab 2: Generated Blender Python Code (Round 1 vs Round 2 + Telemetry) -->
-        <div id="tabCodeDiff" class="tab-panel" style="display: none;">
-          <div class="editor-toolbar">
-            <span>Inspect unrestricted scene-specific <code>bpy</code> Python code generated by Gemini 4 Argon (Round 1 vs Rewritten Round 2):</span>
-            <div class="stage-switcher">
-              <button id="btnCodeViewR1" class="btn-chip">Round 1 bpy</button>
-              <button id="btnCodeViewR2" class="btn-chip active">Round 2 Rewritten bpy</button>
-              <button id="btnCodeViewTelemetry" class="btn-chip">3D Bounds Telemetry</button>
-            </div>
+        <div id="tabCodeDiff" class="tab-panel" style="display:none;">
+          <div style="display:flex;gap:6px;margin-bottom:8px;">
+            <button id="btnCodeViewR1" class="btn-dev">Round 1 bpy</button>
+            <button id="btnCodeViewR2" class="btn-dev">Round 2 bpy</button>
+            <button id="btnCodeViewTelemetry" class="btn-dev">Bounds Telemetry</button>
           </div>
-          <textarea id="sceneCodeEditor" class="code-editor" spellcheck="false" placeholder="# Scene-specific Blender Python (bpy) code generated by Gemini 4 Argon will appear here..."></textarea>
+          <textarea id="sceneCodeEditor" class="code-editor" spellcheck="false" placeholder="# Blender Python bpy code will appear here..."></textarea>
         </div>
 
-        <!-- Tab 3: Multi-Epoch Causal Simulation -->
-        <div id="tabCausal" class="tab-panel" style="display: none;">
-          <div id="causalGraphContainer" class="causal-container">
-            <div class="empty-state">
-              After Round 2 verification completes, run Step 5 (Causal Time Travel) to propagate a historical intervention across 4 epochs with bespoke Blender 3D geometry per era.
-            </div>
+        <div id="tabCausal" class="tab-panel" style="display:none;">
+          <div id="causalGraphContainer">
+            <div class="empty-placeholder">Run Step 5 to view multi-epoch causal consequences.</div>
           </div>
         </div>
 
-        <!-- Tab 4: Execution & Model Telemetry Logs -->
-        <div id="tabLogs" class="tab-panel" style="display: none;">
+        <div id="tabLogs" class="tab-panel" style="display:none;">
           <div id="callLogsList" class="logs-list">
-            <div class="empty-state">No model or toolchain calls logged yet.</div>
+            <div class="empty-placeholder">No logs yet.</div>
           </div>
         </div>
-      </section>
-    </div>
-  </main>
 
+        <div id="tabArtDirector" class="tab-panel" style="display:none;">
+          <div style="display:flex;flex-direction:column;gap:10px;font-size:11px;">
+            <label style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Sun Angle:</span>
+              <input type="range" id="ctrlSunAngle" min="0" max="360" value="42" style="width:140px;" />
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Light Intensity:</span>
+              <input type="range" id="ctrlLightIntensity" min="20" max="250" value="125" style="width:140px;" />
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Material Roughness:</span>
+              <input type="range" id="ctrlRoughness" min="10" max="100" value="55" style="width:140px;" />
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Photo Mesh Opacity:</span>
+              <input type="range" id="ctrlPhotoOpacity" min="0" max="100" value="88" style="width:140px;" />
+            </label>
+            <button id="btnCopySettingsJson" class="btn-dev" style="margin-top:6px;">📋 Copy Settings JSON</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main JavaScript Controller -->
   <script src="app.js"></script>
 </body>
 </html>

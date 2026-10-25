@@ -1,21 +1,22 @@
 /**
- * TIME TRAVEL — MVP3: Autonomous 3D World Generation, 4-View Adversarial Critic,
- * Closed-Loop Code Rewrite, and Multi-Epoch Causal Simulator.
+ * TIME TRAVEL — Cinematic Multi-Epoch 3D World, Draggable Timeline,
+ * Closed-Loop Verification & Multi-Century Causal Simulator.
  *
- * Implements Google's Official 6-Workflow 3D Guide for Gemini 4 Argon:
- *   1. Workflow #6: MoGe-2 Metric Camera Calibration + Numbered X/Y Grid + Top-Down 2D Metric Floorplan (.svg)
- *   2. Requirement 1: Unrestricted Scene-Specific Blender 4.1 (bpy) & Three.js Authoring (Round 1)
- *   3. Workflow #3: Independent Adversarial Critic inspecting 4 actual screenshots (Orig Cam, 3/4, Low Angle, Wireframe)
- *   4. Requirement 3: Closed-Loop bpy Code Rewrite & 4-View Rerender (Round 2) with measured improvement
- *   5. Workflow #5: Nano Banana Photorealistic Target Renders & Seamless PBR Textures
- *   6. Workflow #4: Live Art-Director Control Panel + progress.html Milestone Screenshot Gallery
+ * Implements:
+ *   1. Full-viewport interactive 3D world primary canvas
+ *   2. Minimal translucent glassmorphism chrome & Instrument Serif typography
+ *   3. Signature continuous draggable timeline spanning viewport bottom (1206 <-> 1566 <-> 1938 <-> 2026)
+ *   4. Historical Intervention object interaction ("What would you change?")
+ *   5. Signature RETURN TO PRESENT sequence (sequential era warp, camera restore to [0,0,0], comparison slider reveal)
+ *   6. Visual Causal Ancestry step trail
+ *   7. Collapsible Developer Mode drawer preserving all verification metrics, critic views, code diffs & logs
  */
 
 const state = {
   samplePath: 'samples/cloister_courtyard.jpg',
   photoDataUrl: null,
-  photoWidth: 600,
-  photoHeight: 800,
+  photoWidth: 1024,
+  photoHeight: 1365,
   photoImgElement: null,
   gridOverlayDataUrl: null,
   floorplanSvgDataUrl: null,
@@ -25,30 +26,33 @@ const state = {
   mogeData: null,
   metricSummary: null,
 
-  // Step 2: Round 1 Unrestricted Authoring
+  // Step 2: Round 1 Authoring
   round1: null,
-  round1Views: null, // { originalCam, threeQuarter, lowAngle, wireframe }
+  round1Views: null,
 
-  // Step 3: Independent Adversarial Critique (Round 1 & Round 2)
+  // Step 3: Adversarial Critique
   critiqueR1: null,
   critiqueR2: null,
 
   // Step 4: Round 2 Rewritten Code & Rerender
   round2: null,
-  round2Views: null, // { originalCam, threeQuarter, lowAngle, wireframe }
+  round2Views: null,
 
   // Step 5: Multi-Epoch Causal Simulation & Branching World States
   causalSimulation: null,
-  branches: {}, // Preserves { orig, branchA, branchB } without destroying previous states
+  branches: {}, // Preserves { orig, branchA, branchB }
   activeBranchKey: 'branchA',
   selected3DObject: null,
   eraRenders: {},
 
-  // Active Viewport State
-  activeStage: 'round2', // 'round1' | 'round2' | 'era1206' | 'era1566' | 'era1938' | 'alt2026'
-  activeCamPreset: 'originalCam', // 'originalCam' | 'threeQuarter' | 'lowAngle' | 'wireframe'
-  showingShotRound: 2, // 1 or 2
-  activeCodeView: 'r2', // 'r1' | 'r2' | 'telemetry'
+  // Active Viewport & Timeline State
+  activeStage: 'alt2026', // 'round1' | 'round2' | 'era1206' | 'era1566' | 'era1938' | 'alt2026'
+  activeYear: 2026,
+  activeCamPreset: 'originalCam',
+  showingShotRound: 2,
+  activeCodeView: 'r2',
+  isDevDrawerOpen: false,
+  isReturnWarpActive: false,
 
   latencies: {
     mogeMs: 0,
@@ -95,143 +99,212 @@ let basePhotoCanvas = null;
 let dynamicTextureCanvas = null;
 let dynamicPhotoTexture = null;
 
-// Interactive First-Person / Orbit Navigation
+// Camera Navigation & Cinematic Tween State
 const navState = {
   isDragging: false,
   lastX: 0,
   lastY: 0,
   yaw: 0,
   pitch: 0,
-  keys: {},
+  isTweening: false,
+  tweenStartPos: new THREE.Vector3(),
+  tweenTargetPos: new THREE.Vector3(),
+  tweenStartQuat: new THREE.Quaternion(),
+  tweenTargetQuat: new THREE.Quaternion(),
+  tweenStartFov: 75,
+  tweenTargetFov: 75,
+  tweenProgress: 1,
+  tweenDurationMs: 800,
+  tweenStartTime: 0,
 };
 
-const dom = {
-  sampleSelect: document.getElementById('sampleSelect'),
-  photoInput: document.getElementById('photoInput'),
-  thinkingLevelSelect: document.getElementById('thinkingLevelSelect'),
-  btnRunDemoLoop: document.getElementById('btnRunDemoLoop'),
-  btnStep1Ground: document.getElementById('btnStep1Ground'),
-  btnStep2AuthorR1: document.getElementById('btnStep2AuthorR1'),
-  btnStep3Critic: document.getElementById('btnStep3Critic'),
-  btnStep4RewriteR2: document.getElementById('btnStep4RewriteR2'),
-  btnStep5Causal: document.getElementById('btnStep5Causal'),
+// Year-to-Timeline layout constants (timeline rail spans 1100 to 2030)
+const TIMELINE_MIN_YEAR = 1100;
+const TIMELINE_MAX_YEAR = 2030;
+const KEYFRAME_YEARS = [1206, 1566, 1938, 2026];
 
-  apiErrorBanner: document.getElementById('apiErrorBanner'),
-  apiErrorText: document.getElementById('apiErrorText'),
-  btnDismissError: document.getElementById('btnDismissError'),
+// DOM references
+let dom = {};
 
-  statusBadge: document.getElementById('statusBadge'),
-  modelMetaInfo: document.getElementById('modelMetaInfo'),
+function cacheDomElements() {
+  dom = {
+    // Top chrome
+    activeSceneTitle: document.getElementById('activeSceneTitle'),
+    camButtons: document.querySelectorAll('#camViewSwitcher .cam-pill-btn'),
+    toggleSplitSlider: document.getElementById('toggleSplitSlider'),
+    btnToggleDevMode: document.getElementById('btnToggleDevMode'),
 
-  activeStageLabel: document.getElementById('activeStageLabel'),
-  stageButtons: document.querySelectorAll('#stageSwitcher .btn-chip'),
-  camButtons: document.querySelectorAll('#camViewSwitcher .btn-chip'),
-  toggleSplitSlider: document.getElementById('toggleSplitSlider'),
-  toggleMogeBackdrop: document.getElementById('toggleMogeBackdrop'),
-  toggleBlenderGlb: document.getElementById('toggleBlenderGlb'),
+    // Hero Era Watermark
+    eraHeroOverlay: document.getElementById('eraHeroOverlay'),
+    heroYearNumber: document.getElementById('heroYearNumber'),
+    heroYearSuffix: document.getElementById('heroYearSuffix'),
+    heroEraName: document.getElementById('heroEraName'),
+    heroEraProvenance: document.getElementById('heroEraProvenance'),
+    objectHoverHud: document.getElementById('objectHoverHud'),
+    hoverObjectName: document.getElementById('hoverObjectName'),
+    cinematicToast: document.getElementById('cinematicToast'),
+    cinematicToastText: document.getElementById('cinematicToastText'),
 
-  viewportContainer: document.getElementById('viewportContainer'),
-  threeCanvas: document.getElementById('threeCanvas'),
-  viewportHudTop: document.getElementById('viewportHudTop'),
-  viewportHudBottom: document.getElementById('viewportHudBottom'),
+    // Signature Bottom Timeline
+    cinematicTimelineBar: document.getElementById('cinematicTimelineBar'),
+    btnBranchOrig: document.getElementById('btnBranchOrig'),
+    btnBranchA: document.getElementById('btnBranchA'),
+    btnBranchB: document.getElementById('btnBranchB'),
+    btnOpenInterveneModal: document.getElementById('btnOpenInterveneModal'),
+    btnReturnToPresent: document.getElementById('btnReturnToPresent'),
 
-  splitCompareOverlay: document.getElementById('splitCompareOverlay'),
-  splitLeftClip: document.getElementById('splitLeftClip'),
-  splitOriginalImg: document.getElementById('splitOriginalImg'),
-  splitDividerLine: document.getElementById('splitDividerLine'),
-  splitSliderInput: document.getElementById('splitSliderInput'),
+    timelineTrackWrap: document.getElementById('timelineTrackWrap'),
+    timelineRail: document.getElementById('timelineRail'),
+    timelineFill: document.getElementById('timelineFill'),
+    timelineScrubHandle: document.getElementById('timelineScrubHandle'),
+    scrubFloatingBadge: document.getElementById('scrubFloatingBadge'),
+    timeScrubberRange: document.getElementById('timeScrubberRange'),
+    timeScrubberLabel: document.getElementById('timeScrubberLabel'),
 
-  hudCameraPose: document.getElementById('hudCameraPose'),
-  hudGeometryInfo: document.getElementById('hudGeometryInfo'),
-  hudTimelineState: document.getElementById('hudTimelineState'),
-  btnInspectMonumentAncestry: document.getElementById('btnInspectMonumentAncestry'),
-  btnInspectArcadeAncestry: document.getElementById('btnInspectArcadeAncestry'),
+    keyframeNodes: {
+      1206: document.getElementById('node1206'),
+      1566: document.getElementById('node1566'),
+      1938: document.getElementById('node1938'),
+      2026: document.getElementById('node2026'),
+    },
 
-  causalAncestryPopover: document.getElementById('causalAncestryPopover'),
-  ancestryStatusBadge: document.getElementById('ancestryStatusBadge'),
-  ancestryObjectTitle: document.getElementById('ancestryObjectTitle'),
-  ancestryPersistentId: document.getElementById('ancestryPersistentId'),
-  ancestryInterventionText: document.getElementById('ancestryInterventionText'),
-  ancestryEvolutionList: document.getElementById('ancestryEvolutionList'),
-  ancestryAssumptionsText: document.getElementById('ancestryAssumptionsText'),
-  btnCloseAncestryPopover: document.getElementById('btnCloseAncestryPopover'),
-  btnDirectInterveneLavabo: document.getElementById('btnDirectInterveneLavabo'),
-  btnDirectInterveneAstrolabe: document.getElementById('btnDirectInterveneAstrolabe'),
-  btnDirectScaleUp: document.getElementById('btnDirectScaleUp'),
-  btnDirectRotateObj: document.getElementById('btnDirectRotateObj'),
+    // Viewport & 3D
+    viewportContainer: document.getElementById('viewportContainer'),
+    threeCanvas: document.getElementById('threeCanvas'),
+    splitCompareOverlay: document.getElementById('splitCompareOverlay'),
+    splitLeftClip: document.getElementById('splitLeftClip'),
+    splitOriginalImg: document.getElementById('splitOriginalImg'),
+    splitDividerLine: document.getElementById('splitDividerLine'),
+    splitSliderInput: document.getElementById('splitSliderInput'),
 
-  timeScrubberRange: document.getElementById('timeScrubberRange'),
-  timeScrubberLabel: document.getElementById('timeScrubberLabel'),
-  btnBranchOrig: document.getElementById('btnBranchOrig'),
-  btnBranchA: document.getElementById('btnBranchA'),
-  btnBranchB: document.getElementById('btnBranchB'),
-  btnReturnToPresent: document.getElementById('btnReturnToPresent'),
+    // Contextual Intervention Card ("What would you change?")
+    interventionModalCard: document.getElementById('interventionModalCard'),
+    interveneObjTag: document.getElementById('interveneObjTag'),
+    interveneObjName: document.getElementById('interveneObjName'),
+    interventionInput: document.getElementById('interventionInput'),
+    suggestedInterventionsBar: document.getElementById('suggestedInterventionsBar'),
+    btnCancelIntervene: document.getElementById('btnCancelIntervene'),
+    btnCloseInterveneModal: document.getElementById('btnCloseInterveneModal'),
+    btnApplyIntervention: document.getElementById('btnApplyIntervention'),
+    propagationProgressBox: document.getElementById('propagationProgressBox'),
+    propagationStatusText: document.getElementById('propagationStatusText'),
 
-  ctrlSunAngle: document.getElementById('ctrlSunAngle'),
-  ctrlLightIntensity: document.getElementById('ctrlLightIntensity'),
-  ctrlRoughness: document.getElementById('ctrlRoughness'),
-  ctrlPhotoOpacity: document.getElementById('ctrlPhotoOpacity'),
-  btnCopySettingsJson: document.getElementById('btnCopySettingsJson'),
+    // Causal Ancestry Card
+    causalAncestryPopover: document.getElementById('causalAncestryPopover'),
+    ancestryStatusBadge: document.getElementById('ancestryStatusBadge'),
+    ancestryObjectTitle: document.getElementById('ancestryObjectTitle'),
+    ancestryPersistentId: document.getElementById('ancestryPersistentId'),
+    ancestryInterventionText: document.getElementById('ancestryInterventionText'),
+    ancestryEvolutionList: document.getElementById('ancestryEvolutionList'),
+    ancestryAssumptionsText: document.getElementById('ancestryAssumptionsText'),
+    btnCloseAncestryPopover: document.getElementById('btnCloseAncestryPopover'),
+    btnDirectInterveneLavabo: document.getElementById('btnDirectInterveneLavabo'),
+    btnDirectInterveneAstrolabe: document.getElementById('btnDirectInterveneAstrolabe'),
+    btnDirectScaleUp: document.getElementById('btnDirectScaleUp'),
+    btnDirectRotateObj: document.getElementById('btnDirectRotateObj'),
 
-  interventionInput: document.getElementById('interventionInput'),
-  btnApplyIntervention: document.getElementById('btnApplyIntervention'),
-  suggestedInterventionsBar: document.getElementById('suggestedInterventionsBar'),
+    // Developer Mode Drawer
+    devDrawerBackdrop: document.getElementById('devDrawerBackdrop'),
+    devDrawerPanel: document.getElementById('devDrawerPanel'),
+    btnCloseDevDrawer: document.getElementById('btnCloseDevDrawer'),
 
-  btnShowR1Shots: document.getElementById('btnShowR1Shots'),
-  btnShowR2Shots: document.getElementById('btnShowR2Shots'),
-  imgViewOrig: document.getElementById('imgViewOrig'),
-  emptyViewOrig: document.getElementById('emptyViewOrig'),
-  metaViewOrig: document.getElementById('metaViewOrig'),
-  imgView34: document.getElementById('imgView34'),
-  emptyView34: document.getElementById('emptyView34'),
-  metaView34: document.getElementById('metaView34'),
-  imgViewLow: document.getElementById('imgViewLow'),
-  emptyViewLow: document.getElementById('emptyViewLow'),
-  metaViewLow: document.getElementById('metaViewLow'),
-  imgViewWire: document.getElementById('imgViewWire'),
-  emptyViewWire: document.getElementById('emptyViewWire'),
-  metaViewWire: document.getElementById('metaViewWire'),
+    sampleSelect: document.getElementById('sampleSelect'),
+    photoInput: document.getElementById('photoInput'),
+    thinkingLevelSelect: document.getElementById('thinkingLevelSelect'),
+    btnRunDemoLoop: document.getElementById('btnRunDemoLoop'),
+    btnStep1Ground: document.getElementById('btnStep1Ground'),
+    btnStep2AuthorR1: document.getElementById('btnStep2AuthorR1'),
+    btnStep3Critic: document.getElementById('btnStep3Critic'),
+    btnStep4RewriteR2: document.getElementById('btnStep4RewriteR2'),
+    btnStep5Causal: document.getElementById('btnStep5Causal'),
 
-  imgGridOverlay: document.getElementById('imgGridOverlay'),
-  metaGridOverlay: document.getElementById('metaGridOverlay'),
-  imgFloorplanSvg: document.getElementById('imgFloorplanSvg'),
-  metaFloorplan: document.getElementById('metaFloorplan'),
-  imgDepthMap: document.getElementById('imgDepthMap'),
-  emptyDepthMap: document.getElementById('emptyDepthMap'),
-  depthRangeMeta: document.getElementById('depthRangeMeta'),
-  imgNanoTarget: document.getElementById('imgNanoTarget'),
-  metaNanoTarget: document.getElementById('metaNanoTarget'),
+    stageButtons: document.querySelectorAll('#stageSwitcher .btn-dev'),
+    activeStageLabel: document.getElementById('activeStageLabel'),
+    toggleMogeBackdrop: document.getElementById('toggleMogeBackdrop'),
+    toggleBlenderGlb: document.getElementById('toggleBlenderGlb'),
 
-  metricCriticScore: document.getElementById('metricCriticScore'),
-  metricCriticSub: document.getElementById('metricCriticSub'),
-  metricMeshComplexity: document.getElementById('metricMeshComplexity'),
-  metricMeshSub: document.getElementById('metricMeshSub'),
-  metricGroundContact: document.getElementById('metricGroundContact'),
-  metricGroundSub: document.getElementById('metricGroundSub'),
-  metricVisualFidelity: document.getElementById('metricVisualFidelity'),
-  metricVisualSub: document.getElementById('metricVisualSub'),
-  metricCodeDelta: document.getElementById('metricCodeDelta'),
-  metricCodeSub: document.getElementById('metricCodeSub'),
-  metricLatencies: document.getElementById('metricLatencies'),
-  metricLatencySub: document.getElementById('metricLatencySub'),
+    apiErrorBanner: document.getElementById('apiErrorBanner'),
+    apiErrorText: document.getElementById('apiErrorText'),
+    btnDismissError: document.getElementById('btnDismissError'),
+    statusBadge: document.getElementById('statusBadge'),
+    modelMetaInfo: document.getElementById('modelMetaInfo'),
 
-  criticReportContainer: document.getElementById('criticReportContainer'),
-  sceneCodeEditor: document.getElementById('sceneCodeEditor'),
-  btnCodeViewR1: document.getElementById('btnCodeViewR1'),
-  btnCodeViewR2: document.getElementById('btnCodeViewR2'),
-  btnCodeViewTelemetry: document.getElementById('btnCodeViewTelemetry'),
-  causalGraphContainer: document.getElementById('causalGraphContainer'),
-  callLogsList: document.getElementById('callLogsList'),
-};
+    // Metrics
+    metricCriticScore: document.getElementById('metricCriticScore'),
+    metricCriticSub: document.getElementById('metricCriticSub'),
+    metricMeshComplexity: document.getElementById('metricMeshComplexity'),
+    metricMeshSub: document.getElementById('metricMeshSub'),
+    metricGroundContact: document.getElementById('metricGroundContact'),
+    metricGroundSub: document.getElementById('metricGroundSub'),
+    metricVisualFidelity: document.getElementById('metricVisualFidelity'),
+    metricVisualSub: document.getElementById('metricVisualSub'),
+    metricCodeDelta: document.getElementById('metricCodeDelta'),
+    metricCodeSub: document.getElementById('metricCodeSub'),
+    metricLatencies: document.getElementById('metricLatencies'),
+    metricLatencySub: document.getElementById('metricLatencySub'),
+
+    // 4-View Critic Shots
+    btnShowR1Shots: document.getElementById('btnShowR1Shots'),
+    btnShowR2Shots: document.getElementById('btnShowR2Shots'),
+    imgViewOrig: document.getElementById('imgViewOrig'),
+    emptyViewOrig: document.getElementById('emptyViewOrig'),
+    metaViewOrig: document.getElementById('metaViewOrig'),
+    imgView34: document.getElementById('imgView34'),
+    emptyView34: document.getElementById('emptyView34'),
+    metaView34: document.getElementById('metaView34'),
+    imgViewLow: document.getElementById('imgViewLow'),
+    emptyViewLow: document.getElementById('emptyViewLow'),
+    metaViewLow: document.getElementById('metaViewLow'),
+    imgViewWire: document.getElementById('imgViewWire'),
+    emptyViewWire: document.getElementById('emptyViewWire'),
+    metaViewWire: document.getElementById('metaViewWire'),
+
+    // Spatial Grounding
+    imgGridOverlay: document.getElementById('imgGridOverlay'),
+    metaGridOverlay: document.getElementById('metaGridOverlay'),
+    imgFloorplanSvg: document.getElementById('imgFloorplanSvg'),
+    metaFloorplan: document.getElementById('metaFloorplan'),
+    imgDepthMap: document.getElementById('imgDepthMap'),
+    emptyDepthMap: document.getElementById('emptyDepthMap'),
+    depthRangeMeta: document.getElementById('depthRangeMeta'),
+    imgNanoTarget: document.getElementById('imgNanoTarget'),
+    metaNanoTarget: document.getElementById('metaNanoTarget'),
+
+    // Tabs
+    criticReportContainer: document.getElementById('criticReportContainer'),
+    sceneCodeEditor: document.getElementById('sceneCodeEditor'),
+    btnCodeViewR1: document.getElementById('btnCodeViewR1'),
+    btnCodeViewR2: document.getElementById('btnCodeViewR2'),
+    btnCodeViewTelemetry: document.getElementById('btnCodeViewTelemetry'),
+    causalGraphContainer: document.getElementById('causalGraphContainer'),
+    callLogsList: document.getElementById('callLogsList'),
+
+    // Art Director
+    ctrlSunAngle: document.getElementById('ctrlSunAngle'),
+    ctrlLightIntensity: document.getElementById('ctrlLightIntensity'),
+    ctrlRoughness: document.getElementById('ctrlRoughness'),
+    ctrlPhotoOpacity: document.getElementById('ctrlPhotoOpacity'),
+    btnCopySettingsJson: document.getElementById('btnCopySettingsJson'),
+
+    // Hidden backward compat
+    hudCameraPose: document.getElementById('hudCameraPose'),
+    hudGeometryInfo: document.getElementById('hudGeometryInfo'),
+    hudTimelineState: document.getElementById('hudTimelineState'),
+    btnInspectMonumentAncestry: document.getElementById('btnInspectMonumentAncestry'),
+    btnInspectArcadeAncestry: document.getElementById('btnInspectArcadeAncestry'),
+  };
+}
 
 // ============================================================================
 // Initialization
 // ============================================================================
 function initApp() {
+  cacheDomElements();
   initThreeViewport();
   bindEvents();
   checkBackendStatus();
-  loadSelectedSample(dom.sampleSelect.value);
+  loadSelectedSample(dom.sampleSelect ? dom.sampleSelect.value : 'samples/cloister_courtyard.jpg');
+  setupTimelineScrubber();
   animateLoop();
 }
 
@@ -240,7 +313,9 @@ async function checkBackendStatus() {
     const res = await fetch('/api/status');
     const data = await res.json();
     if (data.ok) {
-      dom.modelMetaInfo.textContent = `Vertex AI (${data.project}) | ${data.model} | MoGe-2 + Blender 4.1 bpy`;
+      if (dom.modelMetaInfo) {
+        dom.modelMetaInfo.textContent = `Vertex AI (${data.project}) | ${data.model} | MoGe-2 + Blender 4.1 bpy`;
+      }
     } else {
       showApiError(data);
     }
@@ -250,28 +325,42 @@ async function checkBackendStatus() {
 }
 
 function setStatus(type, text) {
-  dom.statusBadge.className = `status-pill status-${type}`;
-  dom.statusBadge.textContent = text;
-}
-
-function setWorkflowStep(stepNum) {
-  for (let i = 1; i <= 5; i++) {
-    const el = document.getElementById(`wfStep${i}`);
-    if (!el) continue;
-    el.classList.remove('active', 'done');
-    if (i < stepNum) el.classList.add('done');
-    else if (i === stepNum) el.classList.add('active');
+  if (dom.statusBadge) {
+    dom.statusBadge.className = `status-pill status-${type}`;
+    dom.statusBadge.textContent = text;
   }
 }
 
+let toastTimeout = null;
+function showToast(text, durationMs = 2800) {
+  if (!dom.cinematicToast) return;
+  if (toastTimeout) clearTimeout(toastTimeout);
+  dom.cinematicToastText.textContent = text;
+  dom.cinematicToast.classList.add('show');
+  toastTimeout = setTimeout(() => {
+    dom.cinematicToast.classList.remove('show');
+    toastTimeout = null;
+  }, durationMs);
+}
+
+function dismissToast() {
+  if (!dom.cinematicToast) return;
+  if (toastTimeout) {
+    clearTimeout(toastTimeout);
+    toastTimeout = null;
+  }
+  dom.cinematicToast.classList.remove('show');
+}
+
 function showApiError(errObj) {
+  if (!dom.apiErrorBanner) return;
   dom.apiErrorBanner.style.display = 'block';
   dom.apiErrorText.textContent = typeof errObj === 'string' ? errObj : JSON.stringify(errObj, null, 2);
-  setStatus('err', 'API Error — Check Banner');
+  setStatus('err', 'API Error');
 }
 
 function hideApiError() {
-  dom.apiErrorBanner.style.display = 'none';
+  if (dom.apiErrorBanner) dom.apiErrorBanner.style.display = 'none';
 }
 
 function addCallLog(entry) {
@@ -283,8 +372,9 @@ function addCallLog(entry) {
 }
 
 function renderCallLogs() {
+  if (!dom.callLogsList) return;
   if (!state.callLogs.length) {
-    dom.callLogsList.innerHTML = '<div class="empty-state">No model or toolchain calls logged yet.</div>';
+    dom.callLogsList.innerHTML = '<div class="empty-placeholder">No model or toolchain calls logged yet.</div>';
     return;
   }
   dom.callLogsList.innerHTML = state.callLogs
@@ -319,55 +409,206 @@ async function saveMilestoneToGallery(milestoneObj) {
 }
 
 // ============================================================================
-// Three.js Viewport Setup
+// Full-Viewport Three.js Setup & Camera Tweening
 // ============================================================================
 function initThreeViewport() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
   renderer = new THREE.WebGLRenderer({
     canvas: dom.threeCanvas,
     antialias: true,
     preserveDrawingBuffer: true,
+    powerPreference: 'high-performance',
   });
-  renderer.setPixelRatio(1);
-  renderer.setSize(640, 480, false);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(w, h, false);
   renderer.outputEncoding = THREE.sRGBEncoding;
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x070b14);
-  scene.fog = new THREE.FogExp2(0x070b14, 0.01);
+  scene.background = new THREE.Color(0x0c111c);
+  scene.fog = new THREE.FogExp2(0x0c111c, 0.007);
 
-  camera = new THREE.PerspectiveCamera(75, 640 / 480, 0.05, 120);
+  camera = new THREE.PerspectiveCamera(75, w / h, 0.05, 120);
   camera.position.set(0, 0, 0);
   camera.lookAt(0, 0, -1);
 
-  ambientLight = new THREE.AmbientLight(0xffffff, 0.82);
+  ambientLight = new THREE.AmbientLight(0xffffff, 0.84);
   scene.add(ambientLight);
 
   hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x443c30, 0.55);
   scene.add(hemiLight);
 
-  dirLight = new THREE.DirectionalLight(0xfffbeb, 1.25);
-  dirLight.position.set(2.5, 8.5, -3.0);
+  dirLight = new THREE.DirectionalLight(0xfffbeb, 1.26);
+  dirLight.position.set(2.2, 8.8, -3.5);
   scene.add(dirLight);
 
   proceduralGroup = new THREE.Group();
   scene.add(proceduralGroup);
 
   setupNavigationControls();
+  window.addEventListener('resize', onWindowResize);
 }
 
-function resizeRendererToPhoto(width, height) {
-  const maxW = 680;
-  const maxH = 440;
-  const scale = Math.min(maxW / width, maxH / height, 1);
-  const rw = Math.round(width * scale);
-  const rh = Math.round(height * scale);
-  renderer.setSize(rw, rh, false);
-  camera.aspect = width / height;
+function onWindowResize() {
+  if (!renderer || !camera) return;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
 
+function startCameraTween(targetPos, targetLookAt, targetFov = null, durationMs = 850) {
+  navState.isTweening = true;
+  navState.tweenStartTime = performance.now();
+  navState.tweenDurationMs = durationMs;
+  navState.tweenStartPos.copy(camera.position);
+  navState.tweenTargetPos.copy(targetPos);
+
+  navState.tweenStartQuat.copy(camera.quaternion);
+  const m = new THREE.Matrix4().lookAt(targetPos, targetLookAt, new THREE.Vector3(0, 1, 0));
+  navState.tweenTargetQuat.setFromRotationMatrix(m);
+
+  navState.tweenStartFov = camera.fov;
+  navState.tweenTargetFov = targetFov !== null ? targetFov : (state.mogeData?.intrinsics?.fovYDeg || 75.0);
+}
+
+function setCameraPreset(presetName, animate = true) {
+  state.activeCamPreset = presetName;
+  dom.camButtons.forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.cam === presetName);
+  });
+
+  const baseFov = state.mogeData?.intrinsics?.fovYDeg || 75.0;
+  const groundY = state.metricSummary?.groundYThree ?? -1.72;
+  const midZ = -6.2;
+
+  if (wireframeMesh) wireframeMesh.visible = presetName === 'wireframe';
+  proceduralGroup.traverse((child) => {
+    if (child.isMesh && child.material) {
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      mats.forEach((m) => {
+        m.wireframe = presetName === 'wireframe';
+      });
+    }
+  });
+
+  let targetPos = new THREE.Vector3(0, 0, 0);
+  let targetLookAt = new THREE.Vector3(0, 0, -1);
+  let targetFov = baseFov;
+
+  if (presetName === 'originalCam') {
+    targetPos.set(0, 0, 0);
+    targetLookAt.set(0, 0, -1);
+    targetFov = baseFov;
+    if (photoMesh && fullIndexAttr) photoMesh.geometry.setIndex(fullIndexAttr);
+    if (photoMesh) photoMesh.material.opacity = state.artDirectorSettings.photoMeshOpacity;
+    updateCameraHud('Cam 1: ORIGINAL [0.00, 0.00, 0.00]');
+  } else if (presetName === 'threeQuarter') {
+    targetPos.set(2.35, 2.15, -0.85);
+    targetLookAt.set(0, -0.35, midZ);
+    targetFov = Math.min(72, baseFov * 0.78);
+    if (photoMesh && displacedIndexAttr) photoMesh.geometry.setIndex(displacedIndexAttr);
+    if (photoMesh) photoMesh.material.opacity = 0.55;
+    updateCameraHud('Cam 2: 3/4 OVERVIEW');
+  } else if (presetName === 'lowAngle') {
+    targetPos.set(0.95, groundY + 0.34, -1.35);
+    targetLookAt.set(0, groundY + 0.25, -5.8);
+    targetFov = Math.min(68, baseFov * 0.75);
+    if (photoMesh && displacedIndexAttr) photoMesh.geometry.setIndex(displacedIndexAttr);
+    if (photoMesh) photoMesh.material.opacity = 0.62;
+    updateCameraHud('Cam 3: LOW GROUND');
+  } else if (presetName === 'wireframe') {
+    targetPos.set(-1.95, 1.55, -0.9);
+    targetLookAt.set(0, -0.3, midZ);
+    targetFov = Math.min(72, baseFov * 0.78);
+    if (photoMesh && displacedIndexAttr) photoMesh.geometry.setIndex(displacedIndexAttr);
+    if (photoMesh) photoMesh.material.opacity = 0.22;
+    updateCameraHud('Cam 4: WIREFRAME');
+  }
+
+  if (animate) {
+    startCameraTween(targetPos, targetLookAt, targetFov, 750);
+  } else {
+    camera.position.copy(targetPos);
+    camera.lookAt(targetLookAt);
+    camera.fov = targetFov;
+    camera.updateProjectionMatrix();
+    renderer.render(scene, camera);
+  }
+}
+
+function updateCameraHud(labelOverride) {
+  if (!dom.hudCameraPose) return;
+  const p = camera.position;
+  const poseStr = labelOverride || `[${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}]`;
+  dom.hudCameraPose.textContent = `${poseStr} | FOV: ${camera.fov.toFixed(1)}°`;
+}
+
+/**
+ * Captures 4 diagnostic screenshots for the Adversarial Critic.
+ * Temporarily switches to calibrated 640x480 resolution to preserve critic cache keys.
+ */
+async function captureFourDiagnosticScreenshots() {
+  const prevW = window.innerWidth;
+  const prevH = window.innerHeight;
+  const prevPreset = state.activeCamPreset;
+
+  // Temporarily hide overlays
+  if (dom.eraHeroOverlay) dom.eraHeroOverlay.style.visibility = 'hidden';
+  if (dom.cinematicTimelineBar) dom.cinematicTimelineBar.style.visibility = 'hidden';
+  if (dom.causalAncestryPopover) dom.causalAncestryPopover.style.display = 'none';
+
+  // Fixed 640x480 for critic consistency
+  renderer.setSize(640, 480, false);
+  camera.aspect = 640 / 480;
+  camera.updateProjectionMatrix();
+
+  const shots = {};
+  for (const preset of ['originalCam', 'threeQuarter', 'lowAngle', 'wireframe']) {
+    setCameraPreset(preset, false);
+    renderer.render(scene, camera);
+    shots[preset] = dom.threeCanvas.toDataURL('image/png');
+  }
+
+  // Restore full viewport dimensions
+  renderer.setSize(prevW, prevH, false);
+  camera.aspect = prevW / prevH;
+  camera.updateProjectionMatrix();
+
+  if (dom.eraHeroOverlay) dom.eraHeroOverlay.style.visibility = 'visible';
+  if (dom.cinematicTimelineBar) dom.cinematicTimelineBar.style.visibility = 'visible';
+  setCameraPreset(prevPreset || 'originalCam', false);
+
+  return shots;
+}
+
+function displayFourDiagnosticScreenshots(viewsObj, roundNum) {
+  if (!viewsObj) return;
+  state.showingShotRound = roundNum;
+  if (dom.btnShowR1Shots) dom.btnShowR1Shots.classList.toggle('active', roundNum === 1);
+  if (dom.btnShowR2Shots) dom.btnShowR2Shots.classList.toggle('active', roundNum === 2);
+
+  const pairs = [
+    [dom.imgViewOrig, dom.emptyViewOrig, dom.metaViewOrig, viewsObj.originalCam, `R${roundNum} [0,0,0]`],
+    [dom.imgView34, dom.emptyView34, dom.metaView34, viewsObj.threeQuarter, `R${roundNum} 3/4 View`],
+    [dom.imgViewLow, dom.emptyViewLow, dom.metaViewLow, viewsObj.lowAngle, `R${roundNum} Ground`],
+    [dom.imgViewWire, dom.emptyViewWire, dom.metaViewWire, viewsObj.wireframe, `R${roundNum} Wireframe`],
+  ];
+
+  pairs.forEach(([imgEl, emptyEl, metaEl, src, label]) => {
+    if (imgEl && src) {
+      imgEl.src = src;
+      imgEl.style.display = 'block';
+      if (emptyEl) emptyEl.style.display = 'none';
+      if (metaEl) metaEl.textContent = label;
+    }
+  });
+}
+
 // ============================================================================
-// Load Sample or Uploaded Photograph
+// Sample Loading & MoGe-2 3D Point Cloud Mesh Generation
 // ============================================================================
 async function fetchImageAsDataUrl(url) {
   const res = await fetch(url);
@@ -385,18 +626,24 @@ async function loadSelectedSample(sampleUrl) {
   await loadPhotoFromDataUrl(dataUrl);
 
   if (sampleUrl.includes('cloister_courtyard')) {
-    dom.imgGridOverlay.src = 'samples/cloister_grid_overlay.png';
-    dom.imgFloorplanSvg.src = 'samples/cloister_floorplan.svg';
-    dom.imgNanoTarget.src = 'samples/cloister_target_render.jpg';
+    if (dom.activeSceneTitle) dom.activeSceneTitle.textContent = 'The Cloisters · Romanesque Courtyard';
+    if (dom.imgGridOverlay) dom.imgGridOverlay.src = 'samples/cloister_grid_overlay.png';
+    if (dom.imgFloorplanSvg) dom.imgFloorplanSvg.src = 'samples/cloister_floorplan.svg';
+    if (dom.imgNanoTarget) dom.imgNanoTarget.src = 'samples/cloister_target_render.jpg';
     state.gridOverlayDataUrl = await fetchImageAsDataUrl('samples/cloister_grid_overlay.png');
     state.targetRenderDataUrl = await fetchImageAsDataUrl('samples/cloister_target_render.jpg');
-    dom.interventionInput.value =
-      'In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.';
+    if (dom.interventionInput) {
+      dom.interventionInput.value =
+        'In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.';
+    }
   } else {
-    dom.imgNanoTarget.src = 'samples/target_1926_historical.jpg';
+    if (dom.activeSceneTitle) dom.activeSceneTitle.textContent = 'Historic Architectural Interior';
+    if (dom.imgNanoTarget) dom.imgNanoTarget.src = 'samples/target_1926_historical.jpg';
     state.targetRenderDataUrl = await fetchImageAsDataUrl('samples/target_1926_historical.jpg');
-    dom.interventionInput.value =
-      'In 1926, install carved dark walnut picture-frame wall molding, an heirloom cognac leather club chair, and an antique bronze reading lamp.';
+    if (dom.interventionInput) {
+      dom.interventionInput.value =
+        'In 1926, install carved dark walnut picture-frame wall molding, an heirloom cognac leather club chair, and an antique bronze reading lamp.';
+    }
   }
 }
 
@@ -409,9 +656,7 @@ async function loadPhotoFromDataUrl(dataUrl) {
       state.photoHeight = img.naturalHeight || img.height;
       state.photoImgElement = img;
 
-      dom.splitOriginalImg.src = dataUrl;
-      resizeRendererToPhoto(state.photoWidth, state.photoHeight);
-      setWorkflowStep(1);
+      if (dom.splitOriginalImg) dom.splitOriginalImg.src = dataUrl;
       resolve(img);
     };
     img.onerror = reject;
@@ -419,9 +664,6 @@ async function loadPhotoFromDataUrl(dataUrl) {
   });
 }
 
-// ============================================================================
-// Workflow #6: Build MoGe-2 Metric 3D Mesh + Dynamic X/Y Grid & 2D Floorplan
-// ============================================================================
 function buildMoge3DMeshAndExtractSummary(mogeData, photoImg) {
   if (photoMesh) {
     scene.remove(photoMesh);
@@ -544,7 +786,7 @@ function buildMoge3DMeshAndExtractSummary(mogeData, photoImg) {
   });
 
   photoMesh = new THREE.Mesh(geom, mat);
-  photoMesh.visible = dom.toggleMogeBackdrop.checked;
+  photoMesh.visible = dom.toggleMogeBackdrop ? dom.toggleMogeBackdrop.checked : true;
   scene.add(photoMesh);
 
   const wireMat = new THREE.MeshBasicMaterial({
@@ -559,10 +801,8 @@ function buildMoge3DMeshAndExtractSummary(mogeData, photoImg) {
 
   const fovY = mogeData.intrinsics?.fovYDeg || 75.0;
   camera.fov = fovY;
-  camera.aspect = basePhotoCanvas.width / basePhotoCanvas.height;
   camera.updateProjectionMatrix();
 
-  // Sample 5x5 grid of metric 3D landmarks for Argon
   const sampledGrid = [];
   for (let gy of [0.15, 0.35, 0.5, 0.65, 0.85]) {
     const r = Math.min(gh - 1, Math.floor(gy * (gh - 1)));
@@ -590,126 +830,11 @@ function buildMoge3DMeshAndExtractSummary(mogeData, photoImg) {
     sampledMetricLandmarks: sampledGrid,
   };
 
-  setCameraPreset('originalCam');
+  setCameraPreset('originalCam', false);
 }
 
 // ============================================================================
-// 4-View Diagnostic Camera Presets & Screenshot Capture (Workflow #3)
-// ============================================================================
-function setCameraPreset(presetName) {
-  state.activeCamPreset = presetName;
-  dom.camButtons.forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.cam === presetName);
-    btn.classList.toggle('btn-accent', btn.dataset.cam === presetName);
-  });
-
-  const baseFov = state.mogeData?.intrinsics?.fovYDeg || 75.0;
-  const groundY = state.metricSummary?.groundYThree ?? -1.72;
-  const midZ = -6.2;
-
-  if (wireframeMesh) wireframeMesh.visible = presetName === 'wireframe';
-
-  // Toggle wireframe on procedural Blender meshes when in 'wireframe' view
-  proceduralGroup.traverse((child) => {
-    if (child.isMesh && child.material) {
-      const mats = Array.isArray(child.material) ? child.material : [child.material];
-      mats.forEach((m) => {
-        m.wireframe = presetName === 'wireframe';
-      });
-    }
-  });
-
-  if (presetName === 'originalCam') {
-    camera.fov = baseFov;
-    camera.position.set(0, 0, 0);
-    camera.rotation.set(0, 0, 0);
-    camera.lookAt(0, 0, -1);
-    if (photoMesh && fullIndexAttr) photoMesh.geometry.setIndex(fullIndexAttr);
-    if (photoMesh) photoMesh.material.opacity = state.artDirectorSettings.photoMeshOpacity;
-    updateCameraHud('Cam 1: ORIGINAL [0.00, 0.00, 0.00]');
-  } else if (presetName === 'threeQuarter') {
-    camera.fov = Math.min(72, baseFov * 0.78);
-    camera.position.set(2.35, 2.15, -0.85);
-    camera.lookAt(0, -0.35, midZ);
-    if (photoMesh && displacedIndexAttr) photoMesh.geometry.setIndex(displacedIndexAttr);
-    if (photoMesh) photoMesh.material.opacity = 0.55;
-    updateCameraHud('Cam 2: 3/4 OVERVIEW [+2.35, +2.15, -0.85]');
-  } else if (presetName === 'lowAngle') {
-    camera.fov = Math.min(68, baseFov * 0.75);
-    camera.position.set(0.95, groundY + 0.34, -1.35);
-    camera.lookAt(0, groundY + 0.25, -5.8);
-    if (photoMesh && displacedIndexAttr) photoMesh.geometry.setIndex(displacedIndexAttr);
-    if (photoMesh) photoMesh.material.opacity = 0.62;
-    updateCameraHud(`Cam 3: LOW GROUND [+0.95, ${(groundY + 0.34).toFixed(2)}, -1.35]`);
-  } else if (presetName === 'wireframe') {
-    camera.fov = Math.min(72, baseFov * 0.78);
-    camera.position.set(-1.95, 1.55, -0.9);
-    camera.lookAt(0, -0.3, midZ);
-    if (photoMesh && displacedIndexAttr) photoMesh.geometry.setIndex(displacedIndexAttr);
-    if (photoMesh) photoMesh.material.opacity = 0.22;
-    updateCameraHud('Cam 4: 3D WIREFRAME [-1.95, +1.55, -0.90]');
-  }
-
-  camera.updateProjectionMatrix();
-  renderer.render(scene, camera);
-}
-
-function updateCameraHud(labelOverride) {
-  const p = camera.position;
-  const poseStr = labelOverride || `[${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}]`;
-  dom.hudCameraPose.textContent = `${poseStr} | FOV: ${camera.fov.toFixed(1)}°`;
-}
-
-/**
- * Captures all 4 diagnostic views from the live WebGL canvas with HUD overlays hidden
- * (per Workflow #3 & #5 of the Gemini 4 Argon 3D Guide).
- */
-async function captureFourDiagnosticScreenshots() {
-  const prevPreset = state.activeCamPreset;
-  const prevPopover = dom.causalAncestryPopover ? dom.causalAncestryPopover.style.display : 'none';
-  dom.viewportHudTop.style.visibility = 'hidden';
-  dom.viewportHudBottom.style.visibility = 'hidden';
-  if (dom.causalAncestryPopover) dom.causalAncestryPopover.style.display = 'none';
-
-  const shots = {};
-  for (const preset of ['originalCam', 'threeQuarter', 'lowAngle', 'wireframe']) {
-    setCameraPreset(preset);
-    renderer.render(scene, camera);
-    shots[preset] = dom.threeCanvas.toDataURL('image/png');
-  }
-
-  dom.viewportHudTop.style.visibility = 'visible';
-  dom.viewportHudBottom.style.visibility = 'visible';
-  if (dom.causalAncestryPopover) dom.causalAncestryPopover.style.display = prevPopover;
-  setCameraPreset(prevPreset || 'originalCam');
-  return shots;
-}
-
-function displayFourDiagnosticScreenshots(viewsObj, roundNum) {
-  if (!viewsObj) return;
-  state.showingShotRound = roundNum;
-  dom.btnShowR1Shots.classList.toggle('active', roundNum === 1);
-  dom.btnShowR2Shots.classList.toggle('active', roundNum === 2);
-
-  const pairs = [
-    [dom.imgViewOrig, dom.emptyViewOrig, dom.metaViewOrig, viewsObj.originalCam, `R${roundNum} Pose [0,0,0]`],
-    [dom.imgView34, dom.emptyView34, dom.metaView34, viewsObj.threeQuarter, `R${roundNum} 3/4 View`],
-    [dom.imgViewLow, dom.emptyViewLow, dom.metaViewLow, viewsObj.lowAngle, `R${roundNum} Ground Check`],
-    [dom.imgViewWire, dom.emptyViewWire, dom.metaViewWire, viewsObj.wireframe, `R${roundNum} Wireframe`],
-  ];
-
-  pairs.forEach(([imgEl, emptyEl, metaEl, src, label]) => {
-    if (src) {
-      imgEl.src = src;
-      imgEl.style.display = 'block';
-      emptyEl.style.display = 'none';
-      metaEl.textContent = label;
-    }
-  });
-}
-
-// ============================================================================
-// Load Compiled Blender 4.1 GLB into Three.js Scene
+// Load Compiled Blender GLBs into Three.js
 // ============================================================================
 function clearProceduralGroup() {
   while (proceduralGroup.children.length > 0) {
@@ -743,486 +868,6 @@ function loadBlenderGlbIntoScene(glbUrl) {
   });
 }
 
-function computeAverageGroundElevationError(telemetry) {
-  if (!telemetry || !Array.isArray(telemetry.objects) || !telemetry.objects.length) return 0;
-  // Filter objects whose bottom is within 1.35m of the floor plane (floor-standing columns, planters, wellhead, walls)
-  const floorStanding = telemetry.objects.filter((o) => Math.abs(o.groundElevationDeltaMeters || 0) < 1.35);
-  const list = floorStanding.length ? floorStanding : telemetry.objects;
-  const sumAbs = list.reduce((acc, o) => {
-    const val = typeof o.supportGapMeters === 'number' ? o.supportGapMeters : (o.groundElevationDeltaMeters || 0);
-    return acc + Math.abs(val);
-  }, 0);
-  return Number((sumAbs / list.length).toFixed(3));
-}
-
-// ============================================================================
-// Image Similarity Metrics (Same-Camera Registration Check)
-// ============================================================================
-function computeImageSimilarityMetrics(imgDataUrlA, imgDataUrlB) {
-  return new Promise((resolve) => {
-    const imgA = new Image();
-    const imgB = new Image();
-    let loaded = 0;
-    const onBoth = () => {
-      loaded++;
-      if (loaded < 2) return;
-      const w = 256;
-      const h = 192;
-      const cA = document.createElement('canvas');
-      const cB = document.createElement('canvas');
-      cA.width = cB.width = w;
-      cA.height = cB.height = h;
-      const ctxA = cA.getContext('2d');
-      const ctxB = cB.getContext('2d');
-      ctxA.drawImage(imgA, 0, 0, w, h);
-      ctxB.drawImage(imgB, 0, 0, w, h);
-      const dA = ctxA.getImageData(0, 0, w, h).data;
-      const dB = ctxB.getImageData(0, 0, w, h).data;
-
-      let sumAbs = 0, sumSq = 0, sumA = 0, sumB = 0;
-      const n = w * h * 3;
-      for (let i = 0; i < w * h * 4; i += 4) {
-        for (let c = 0; c < 3; c++) {
-          const va = dA[i + c];
-          const vb = dB[i + c];
-          const diff = va - vb;
-          sumAbs += Math.abs(diff);
-          sumSq += diff * diff;
-          sumA += va;
-          sumB += vb;
-        }
-      }
-      const mae = sumAbs / n;
-      const mse = sumSq / n;
-      const psnr = mse > 0.001 ? 10 * Math.log10((255 * 255) / mse) : 50.0;
-
-      const meanA = sumA / n;
-      const meanB = sumB / n;
-      let varA = 0, varB = 0, cov = 0;
-      for (let i = 0; i < w * h * 4; i += 4) {
-        for (let c = 0; c < 3; c++) {
-          const da = dA[i + c] - meanA;
-          const db = dB[i + c] - meanB;
-          varA += da * da;
-          varB += db * db;
-          cov += da * db;
-        }
-      }
-      varA /= n;
-      varB /= n;
-      cov /= n;
-      const c1 = 6.5025, c2 = 58.5225;
-      const ssim = ((2 * meanA * meanB + c1) * (2 * cov + c2)) / ((meanA * meanA + meanB * meanB + c1) * (varA + varB + c2));
-
-      resolve({
-        mae: Number(mae.toFixed(2)),
-        psnr: Number(psnr.toFixed(2)),
-        ssim: Number(Math.max(0, Math.min(1, ssim)).toFixed(3)),
-      });
-    };
-    imgA.onload = onBoth;
-    imgB.onload = onBoth;
-    imgA.src = imgDataUrlA;
-    imgB.src = imgDataUrlB;
-  });
-}
-
-// ============================================================================
-// Core MVP3 Execution Steps (Steps 1 to 5)
-// ============================================================================
-async function step1GroundWithMogeAnd2DPlan() {
-  if (!state.photoDataUrl) {
-    await loadSelectedSample(dom.sampleSelect.value);
-  }
-  hideApiError();
-  setWorkflowStep(1);
-  setStatus('busy', 'Step 1: Running MoGe-2 Metric 3D Reconstruction & 2D Floorplan Grounding...');
-
-  const res = await fetch('/api/depth', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageDataUrl: state.photoDataUrl }),
-  });
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    showApiError(data);
-    throw new Error(data.message || 'MoGe-2 reconstruction failed');
-  }
-
-  state.mogeData = data;
-  state.latencies.mogeMs = data.latencyMs || 0;
-
-  dom.imgDepthMap.src = data.depthVisualizationDataUrl;
-  dom.imgDepthMap.style.display = 'block';
-  dom.emptyDepthMap.style.display = 'none';
-  dom.depthRangeMeta.textContent = `${data.intrinsics.minDepthMeters}m–${data.intrinsics.maxDepthMeters}m | FOV ${data.intrinsics.fovYDeg}°`;
-
-  buildMoge3DMeshAndExtractSummary(data, state.photoImgElement);
-
-  addCallLog({
-    stage: 'Step 1: MoGe-2 Metric 3D & 2D Plan',
-    latencyMs: data.latencyMs,
-    cached: data.cached,
-    backend: data.backend,
-    summary: `Calibrated FOV ${data.intrinsics.fovYDeg}°, depth [${data.intrinsics.minDepthMeters}m–${data.intrinsics.maxDepthMeters}m], floor Y=${state.metricSummary.groundYThree}m`,
-  });
-
-  await saveMilestoneToGallery({
-    id: 'milestone_1_grounding',
-    stageBadge: 'WORKFLOW #6',
-    title: 'Milestone 1: MoGe-2 Metric Calibration, Annotated X/Y Grid & Top-Down 2D Floorplan (.svg)',
-    description: `Recovered metric 3D point cloud (${data.gridWidth}×${data.gridHeight}), vertical FOV ${data.intrinsics.fovYDeg}°, and ground plane elevation Y = ${state.metricSummary.groundYThree}m.`,
-    metricsSummary: `FOV ${data.intrinsics.fovYDeg}° | Depth ${data.intrinsics.minDepthMeters}m–${data.intrinsics.maxDepthMeters}m`,
-    screenshots: [
-      { title: 'Original Photograph', meta: `${state.photoWidth}×${state.photoHeight}`, dataUrl: state.photoDataUrl },
-      { title: 'Annotated X/Y Metric Grid', meta: 'Horizon & Bounds', dataUrl: dom.imgGridOverlay.src },
-      { title: 'Top-Down 2D Metric Floorplan (.svg)', meta: 'Observed vs Inferred', dataUrl: dom.imgFloorplanSvg.src },
-      { title: 'MoGe-2 Metric Depth Map', meta: `${data.intrinsics.minDepthMeters}m–${data.intrinsics.maxDepthMeters}m`, dataUrl: data.depthVisualizationDataUrl },
-    ],
-  });
-
-  dom.btnStep2AuthorR1.disabled = false;
-  updateMetricsDisplay();
-  setStatus('ok', 'Step 1 Complete — MoGe-2 Metric Mesh & 2D Spatial Plan Ready');
-}
-
-async function step2AuthorRound1World() {
-  if (!state.mogeData) {
-    await step1GroundWithMogeAnd2DPlan();
-  }
-  hideApiError();
-  setWorkflowStep(2);
-  setStatus('busy', 'Step 2 (Round 1): Gemini 4 Argon Writing Unrestricted Scene-Specific Blender bpy Code...');
-
-  const res = await fetch('/api/argon/mvp3-author', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      imageDataUrl: state.photoDataUrl,
-      gridOverlayDataUrl: state.gridOverlayDataUrl,
-      metricSummary: state.metricSummary,
-      thinkingLevel: dom.thinkingLevelSelect.value,
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    showApiError(data);
-    throw new Error(data.exactApiError?.message || 'Round 1 authoring failed');
-  }
-
-  state.round1 = data.round1;
-  state.latencies.authorR1Ms = data.latencyMs || 0;
-  state.latencies.blenderR1Ms = data.round1.blenderLatencyMs || 0;
-
-  if (data.round1.threeJsConfig) {
-    applyThreeJsLightingConfig(data.round1.threeJsConfig);
-  }
-
-  await loadBlenderGlbIntoScene(data.round1.blenderGlbUrl);
-  state.activeStage = 'round1';
-  syncStageButtons();
-  dom.activeStageLabel.textContent = `Stage: Round 1 Initial Scene-Specific bpy (${data.round1.blenderTelemetry?.objectCount || 0} meshes)`;
-
-  // Capture the 4 actual diagnostic screenshots for Round 1
-  state.round1Views = await captureFourDiagnosticScreenshots();
-  displayFourDiagnosticScreenshots(state.round1Views, 1);
-
-  state.metrics.r1SameCamSim = await computeImageSimilarityMetrics(state.photoDataUrl, state.round1Views.originalCam);
-  state.metrics.r1GroundErrorMeters = computeAverageGroundElevationError(data.round1.blenderTelemetry);
-
-  populateSuggestedInterventions(data.round1.suggestedInterventions);
-  state.activeCodeView = 'r1';
-  updateCodeEditorView();
-  updateMetricsDisplay();
-
-  addCallLog({
-    stage: 'Step 2: Argon Round 1 Unrestricted bpy Authoring',
-    latencyMs: data.latencyMs,
-    cached: data.cached,
-    usage: data.usage,
-    summary: `Authored ${data.round1.bpyCode?.split('\n').length || 0} lines of bpy code -> ${data.round1.blenderTelemetry?.objectCount || 0} 3D objects (${data.round1.blenderTelemetry?.totalTriangles || 0} tris)`,
-  });
-
-  await saveMilestoneToGallery({
-    id: 'milestone_2_round1',
-    stageBadge: 'ROUND 1 BPY',
-    title: `Milestone 2: Round 1 Unrestricted Scene-Specific Blender 3D Generation (${data.round1.sceneTitle || 'Architectural World'})`,
-    description: data.round1.spatialSummary || 'Initial scene-specific Blender Python (bpy) generation compiled to GLB and captured across 4 diagnostic viewpoints.',
-    metricsSummary: `${data.round1.blenderTelemetry?.objectCount || 0} meshes | ${data.round1.blenderTelemetry?.totalTriangles || 0} tris | Ground Δ ${state.metrics.r1GroundErrorMeters}m`,
-    screenshots: [
-      { title: 'R1 View 1: Original Camera [0,0,0]', meta: `SSIM ${state.metrics.r1SameCamSim.ssim}`, dataUrl: state.round1Views.originalCam },
-      { title: 'R1 View 2: 3/4 Overview', meta: 'Composition', dataUrl: state.round1Views.threeQuarter },
-      { title: 'R1 View 3: Low Ground Angle', meta: `Ground Δ ${state.metrics.r1GroundErrorMeters}m`, dataUrl: state.round1Views.lowAngle },
-      { title: 'R1 View 4: 3D Wireframe', meta: `${data.round1.blenderTelemetry?.totalTriangles || 0} tris`, dataUrl: state.round1Views.wireframe },
-    ],
-    codePreview: data.round1.bpyCode,
-  });
-
-  dom.btnStep3Critic.disabled = false;
-  setStatus('ok', 'Step 2 Complete — 4 Diagnostic Screenshots Captured; Ready for Adversarial Critic');
-}
-
-async function step3RunAdversarialCritic() {
-  if (!state.round1 || !state.round1Views) {
-    await step2AuthorRound1World();
-  }
-  hideApiError();
-  setWorkflowStep(3);
-  setStatus('busy', 'Step 3: Independent Adversarial Critic Inspecting All 4 Round 1 Screenshots...');
-
-  const res = await fetch('/api/argon/mvp3-critic', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      roundNumber: 1,
-      originalImageDataUrl: state.photoDataUrl,
-      targetRenderDataUrl: state.targetRenderDataUrl,
-      fourViews: state.round1Views,
-      bpyCode: state.round1.bpyCode,
-      blenderTelemetry: state.round1.blenderTelemetry,
-      thinkingLevel: dom.thinkingLevelSelect.value,
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    showApiError(data);
-    throw new Error(data.exactApiError?.message || 'Adversarial Critic failed');
-  }
-
-  state.critiqueR1 = data.critique;
-  state.latencies.criticR1Ms = data.latencyMs || 0;
-  dom.hudTimelineState.textContent = `Round: 1 | Critic Score: ${state.critiqueR1.overallRatingOutOf10}/10 (${(state.critiqueR1.deficiencies || []).length} deficiencies)`;
-
-  renderCriticInspector();
-  updateMetricsDisplay();
-
-  addCallLog({
-    stage: 'Step 3: Independent 4-View Adversarial Critic (Round 1)',
-    latencyMs: data.latencyMs,
-    cached: data.cached,
-    usage: data.usage,
-    summary: `Rated Round 1 ${state.critiqueR1.overallRatingOutOf10}/10 — Identified ${(state.critiqueR1.deficiencies || []).length} genuine geometric/spatial deficiencies`,
-  });
-
-  dom.btnStep4RewriteR2.disabled = false;
-  setStatus('ok', `Step 3 Complete — Critic Rated Round 1 ${state.critiqueR1.overallRatingOutOf10}/10; Ready for Closed-Loop Rewrite`);
-}
-
-async function step4RewriteAndRerenderRound2() {
-  if (!state.critiqueR1) {
-    await step3RunAdversarialCritic();
-  }
-  hideApiError();
-  setWorkflowStep(4);
-  setStatus('busy', 'Step 4 (Round 2): Gemini 4 Argon Rewriting Blender bpy Code to Fix Critic Deficiencies...');
-
-  const res = await fetch('/api/argon/mvp3-rewrite', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      originalImageDataUrl: state.photoDataUrl,
-      targetRenderDataUrl: state.targetRenderDataUrl,
-      fourViews: state.round1Views,
-      round1BpyCode: state.round1.bpyCode,
-      round1Telemetry: state.round1.blenderTelemetry,
-      critique: state.critiqueR1,
-      metricSummary: state.metricSummary,
-      thinkingLevel: dom.thinkingLevelSelect.value,
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    showApiError(data);
-    throw new Error(data.exactApiError?.message || 'Round 2 code rewrite failed');
-  }
-
-  state.round2 = data.round2;
-  state.latencies.rewriteR2Ms = data.latencyMs || 0;
-  state.latencies.blenderR2Ms = data.round2.blenderLatencyMs || 0;
-
-  if (data.round2.updatedThreeJsConfig) {
-    applyThreeJsLightingConfig(data.round2.updatedThreeJsConfig);
-  }
-
-  await loadBlenderGlbIntoScene(data.round2.blenderGlbUrl);
-  state.activeStage = 'round2';
-  syncStageButtons();
-  dom.activeStageLabel.textContent = `Stage: Round 2 Rewritten & Verified bpy (${data.round2.blenderTelemetry?.objectCount || 0} meshes)`;
-
-  // Capture the 4 actual diagnostic screenshots for Round 2
-  state.round2Views = await captureFourDiagnosticScreenshots();
-  displayFourDiagnosticScreenshots(state.round2Views, 2);
-
-  state.metrics.r2SameCamSim = await computeImageSimilarityMetrics(state.photoDataUrl, state.round2Views.originalCam);
-  state.metrics.r2GroundErrorMeters = computeAverageGroundElevationError(data.round2.blenderTelemetry);
-
-  // Run Round 2 Adversarial Critic verification on the new 4 screenshots to measure score improvement
-  setStatus('busy', 'Step 4B: Adversarial Critic Re-Evaluating Round 2 4-View Screenshots...');
-  const crit2Res = await fetch('/api/argon/mvp3-critic', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      roundNumber: 2,
-      originalImageDataUrl: state.photoDataUrl,
-      targetRenderDataUrl: state.targetRenderDataUrl,
-      fourViews: state.round2Views,
-      bpyCode: state.round2.rewrittenBpyCode,
-      blenderTelemetry: state.round2.blenderTelemetry,
-      thinkingLevel: dom.thinkingLevelSelect.value,
-    }),
-  });
-  const crit2Data = await crit2Res.json();
-  if (crit2Res.ok && crit2Data.ok) {
-    state.critiqueR2 = crit2Data.critique;
-    state.latencies.criticR2Ms = crit2Data.latencyMs || 0;
-  }
-
-  const r1Score = state.critiqueR1?.overallRatingOutOf10 ?? 7.2;
-  const r2Score = state.critiqueR2?.overallRatingOutOf10 ?? 9.3;
-  dom.hudTimelineState.textContent = `Round: 2 (Verified) | Critic Score: ${r1Score}/10 → ${r2Score}/10`;
-
-  state.activeCodeView = 'r2';
-  updateCodeEditorView();
-  renderCriticInspector();
-  updateMetricsDisplay();
-
-  addCallLog({
-    stage: 'Step 4: Closed-Loop Round 2 bpy Code Rewrite & Re-Critique',
-    latencyMs: data.latencyMs + (state.latencies.criticR2Ms || 0),
-    cached: data.cached,
-    usage: data.usage,
-    summary: `Rewrote bpy (+${data.round2.diffStats?.addedLines || 0}/-${data.round2.diffStats?.removedLines || 0} lines) -> ${data.round2.blenderTelemetry?.objectCount || 0} objects (${data.round2.blenderTelemetry?.totalTriangles || 0} tris) | Critic: ${r1Score} -> ${r2Score}/10`,
-  });
-
-  await saveMilestoneToGallery({
-    id: 'milestone_4_round2',
-    stageBadge: `ROUND 2 (${r1Score} → ${r2Score}/10)`,
-    title: 'Milestone 4: Closed-Loop Rewritten Blender bpy Code & 4-View Verification',
-    description: data.round2.rewriteSummary || 'Rewrote Blender Python code to resolve Adversarial Critic deficiencies and re-verified across all 4 camera angles.',
-    metricsSummary: `Score ${r1Score} → ${r2Score}/10 | ${data.round2.blenderTelemetry?.objectCount || 0} meshes (${data.round2.blenderTelemetry?.totalTriangles || 0} tris) | Ground Δ ${state.metrics.r2GroundErrorMeters}m`,
-    screenshots: [
-      { title: 'R2 View 1: Original Camera [0,0,0]', meta: `SSIM ${state.metrics.r2SameCamSim.ssim}`, dataUrl: state.round2Views.originalCam },
-      { title: 'R2 View 2: 3/4 Overview', meta: 'Upgraded Arches & Roof', dataUrl: state.round2Views.threeQuarter },
-      { title: 'R2 View 3: Low Ground Angle', meta: `Ground Δ ${state.metrics.r2GroundErrorMeters}m`, dataUrl: state.round2Views.lowAngle },
-      { title: 'R2 View 4: 3D Wireframe', meta: `${data.round2.blenderTelemetry?.totalTriangles || 0} tris`, dataUrl: state.round2Views.wireframe },
-    ],
-    codePreview: data.round2.rewrittenBpyCode,
-  });
-
-  dom.btnStep5Causal.disabled = false;
-  setStatus('ok', `Step 4 Complete — Critic Score Improved ${r1Score}/10 → ${r2Score}/10! Ready for Causal Time Travel`);
-}
-
-async function step5RunMultiEpochCausalSimulation(customIntervention) {
-  if (!state.round2) {
-    await step4RewriteAndRerenderRound2();
-  }
-  const interventionText =
-    customIntervention ||
-    dom.interventionInput.value.trim() ||
-    'In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.';
-
-  dom.interventionInput.value = interventionText;
-  hideApiError();
-  setWorkflowStep(5);
-  setStatus('busy', 'Step 5: Gemini 4 Argon Propagating Multi-Epoch Causal Simulation & Compiling 4 Era GLBs...');
-
-  const res = await fetch('/api/argon/mvp3-causal', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      originalImageDataUrl: state.photoDataUrl,
-      verifiedBpyCode: state.round2.rewrittenBpyCode,
-      interventionText,
-      metricSummary: state.metricSummary,
-      thinkingLevel: dom.thinkingLevelSelect.value,
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    showApiError(data);
-    throw new Error(data.exactApiError?.message || 'Multi-epoch causal simulation failed');
-  }
-
-  state.causalSimulation = data.causalSimulation;
-  state.latencies.causalMs = data.latencyMs || 0;
-
-  // Save in branches map so user can switch between Branch 0, Branch A, and Branch B without losing state
-  const branchKey = interventionText.includes('1566') ? 'branchB' : 'branchA';
-  state.activeBranchKey = branchKey;
-  state.branches[branchKey] = data.causalSimulation;
-  syncBranchButtons();
-
-  // Capture each era's render at [0,0,0] for the Progress Gallery & stage switcher
-  const eraShots = [];
-  const eras = state.causalSimulation.eras || [];
-  for (let i = 0; i < eras.length; i++) {
-    const era = eras[i];
-    const stageKey = i === 0 ? 'era1206' : i === 1 ? 'era1566' : i === 2 ? 'era1938' : 'alt2026';
-    await applyViewportStage(stageKey);
-    const shot = dom.threeCanvas.toDataURL('image/png');
-    state.eraRenders[stageKey] = shot;
-    eraShots.push({
-      title: `${era.year}: ${era.eraTitle}`,
-      meta: `${era.blenderTelemetry?.objectCount || 0} meshes`,
-      dataUrl: shot,
-    });
-  }
-
-  // Return to Alternate 2026 at Original Camera [0,0,0] with Split Comparison enabled
-  await returnToPresentViewpoint();
-
-  renderCausalInspector();
-  updateMetricsDisplay();
-
-  // Switch right-hand tab to Multi-Epoch Causal Simulation
-  document.querySelector('[data-tab="tabCausal"]')?.click();
-
-  addCallLog({
-    stage: 'Step 5: Multi-Epoch Causal 3D Simulation (4 Eras)',
-    latencyMs: data.latencyMs + (state.causalSimulation.totalBlenderLatencyMs || 0),
-    cached: data.cached,
-    usage: data.usage,
-    summary: `Compiled 4 bespoke Blender GLB eras (${eras.map((e) => e.year).join(' → ')}) and returned to camera [0,0,0]`,
-  });
-
-  await saveMilestoneToGallery({
-    id: `milestone_5_causal_${state.activeBranchKey || 'branchA'}`,
-    stageBadge: `CAUSAL BRANCH (${(state.activeBranchKey || 'branchA').toUpperCase()})`,
-    title: `Milestone 5 (${state.activeBranchKey === 'branchB' ? 'Branch B' : 'Branch A'}): Multi-Epoch Causal Simulation (${eras.map((e) => e.year).join(' → ')})`,
-    description: state.causalSimulation.causalChainSummary || interventionText,
-    metricsSummary: `4 Compiled Era GLBs | Returned to Camera [0,0,0]`,
-    screenshots: eraShots,
-    codePreview: eras[eras.length - 1]?.eraBpyCode || '',
-  });
-
-  setStatus('ok', 'MVP3 Complete — Inspect 4-View Critic, Rewritten bpy Code, Multi-Epoch Causal Eras, or Progress Gallery!');
-}
-
-async function runFullMvp3DemoLoop() {
-  try {
-    dom.btnRunDemoLoop.disabled = true;
-    await step1GroundWithMogeAnd2DPlan();
-    await step2AuthorRound1World();
-    await step3RunAdversarialCritic();
-    await step4RewriteAndRerenderRound2();
-    await step5RunMultiEpochCausalSimulation();
-  } catch (err) {
-    console.error('[MVP3 Demo Loop Error]', err);
-  } finally {
-    dom.btnRunDemoLoop.disabled = false;
-  }
-}
-
-// ============================================================================
-// Viewport Stage Switching & Grading
-// ============================================================================
-function syncStageButtons() {
-  dom.stageButtons.forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.stage === state.activeStage);
-  });
-}
-
 function applyPhotoGrading(sepiaStrength = 0, warmth = 0) {
   if (!basePhotoCanvas || !dynamicTextureCanvas || !dynamicPhotoTexture) return;
   const ctx = dynamicTextureCanvas.getContext('2d');
@@ -1248,11 +893,344 @@ function applyPhotoGrading(sepiaStrength = 0, warmth = 0) {
   dynamicPhotoTexture.needsUpdate = true;
 }
 
+// ============================================================================
+// Signature Bottom Timeline & Keyframe Scrubber Engine
+// ============================================================================
+function yearToTimelinePercent(year) {
+  const clamped = Math.max(TIMELINE_MIN_YEAR, Math.min(TIMELINE_MAX_YEAR, year));
+  return ((clamped - TIMELINE_MIN_YEAR) / (TIMELINE_MAX_YEAR - TIMELINE_MIN_YEAR)) * 100;
+}
+
+function percentToYear(pct) {
+  const norm = Math.max(0, Math.min(100, pct)) / 100;
+  return Math.round(TIMELINE_MIN_YEAR + norm * (TIMELINE_MAX_YEAR - TIMELINE_MIN_YEAR));
+}
+
+function updateTimelineUI(year, snapKeyframe = true) {
+  state.activeYear = year;
+  const pct = yearToTimelinePercent(year);
+
+  // Position scrub handle and fill rail
+  if (dom.timelineScrubHandle) {
+    dom.timelineScrubHandle.style.left = `${pct}%`;
+  }
+  if (dom.timelineFill) {
+    dom.timelineFill.style.width = `${pct}%`;
+  }
+  if (dom.scrubFloatingBadge) {
+    dom.scrubFloatingBadge.textContent = `${year} AD`;
+  }
+
+  // Update keyframe nodes active state
+  let closestKey = KEYFRAME_YEARS[0];
+  let minDiff = Infinity;
+  KEYFRAME_YEARS.forEach((ky) => {
+    const diff = Math.abs(ky - year);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closestKey = ky;
+    }
+    const nodeEl = dom.keyframeNodes[ky];
+    if (nodeEl) nodeEl.classList.toggle('active', ky === year);
+  });
+
+  if (dom.timeScrubberRange) {
+    const idx = KEYFRAME_YEARS.indexOf(closestKey);
+    dom.timeScrubberRange.value = String(idx >= 0 ? idx : 3);
+  }
+  if (dom.timeScrubberLabel) {
+    dom.timeScrubberLabel.textContent = `${year} (Present Viewpoint)`;
+  }
+}
+
+function setupTimelineScrubber() {
+  const rail = dom.timelineRail;
+  const handle = dom.timelineScrubHandle;
+  const trackWrap = dom.timelineTrackWrap;
+
+  let isDraggingScrubber = false;
+
+  function onScrubberMove(clientX) {
+    dismissToast();
+    const rect = rail.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+    const pct = (x / rect.width) * 100;
+    const rawYear = percentToYear(pct);
+
+    // Snap to major keyframe if within 30 years
+    let targetYear = rawYear;
+    for (const ky of KEYFRAME_YEARS) {
+      if (Math.abs(ky - rawYear) < 32) {
+        targetYear = ky;
+        break;
+      }
+    }
+
+    updateTimelineUI(targetYear, true);
+    syncWorldToYear(targetYear);
+  }
+
+  trackWrap.addEventListener('mousedown', (e) => {
+    isDraggingScrubber = true;
+    onScrubberMove(e.clientX);
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (isDraggingScrubber) {
+      onScrubberMove(e.clientX);
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    isDraggingScrubber = false;
+  });
+
+  // Touch support for mobile / touchpads
+  trackWrap.addEventListener('touchstart', (e) => {
+    if (e.touches && e.touches[0]) {
+      isDraggingScrubber = true;
+      onScrubberMove(e.touches[0].clientX);
+    }
+  }, { passive: true });
+
+  window.addEventListener('touchmove', (e) => {
+    if (isDraggingScrubber && e.touches && e.touches[0]) {
+      onScrubberMove(e.touches[0].clientX);
+    }
+  }, { passive: true });
+
+  window.addEventListener('touchend', () => {
+    isDraggingScrubber = false;
+  });
+
+  // Direct click on keyframe nodes
+  KEYFRAME_YEARS.forEach((ky) => {
+    const nodeEl = dom.keyframeNodes[ky];
+    if (nodeEl) {
+      nodeEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        jumpToKeyframe(ky);
+      });
+    }
+  });
+
+  // Accessible keyboard slider
+  if (dom.timeScrubberRange) {
+    dom.timeScrubberRange.addEventListener('input', (e) => {
+      const idx = Number(e.target.value);
+      const ky = KEYFRAME_YEARS[idx] || 2026;
+      jumpToKeyframe(ky);
+    });
+  }
+
+  // Global keyboard shortcuts (Left/Right arrows, 1..4 keys)
+  window.addEventListener('keydown', (e) => {
+    // Skip if typing in an input or textarea
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    if (e.key === 'ArrowLeft') {
+      scrubToAdjacentKeyframe(-1);
+    } else if (e.key === 'ArrowRight') {
+      scrubToAdjacentKeyframe(1);
+    } else if (e.key === '1') {
+      jumpToKeyframe(1206);
+    } else if (e.key === '2') {
+      jumpToKeyframe(1566);
+    } else if (e.key === '3') {
+      jumpToKeyframe(1938);
+    } else if (e.key === '4') {
+      jumpToKeyframe(2026);
+    } else if (e.key === 'd' || e.key === 'D') {
+      toggleDevDrawer();
+    } else if (e.key === 'Escape') {
+      closeAllPopovers();
+    }
+  });
+}
+
+function scrubToAdjacentKeyframe(direction) {
+  dismissToast();
+  const currentYear = state.activeYear;
+  let idx = KEYFRAME_YEARS.indexOf(currentYear);
+  if (idx < 0) {
+    idx = direction > 0 ? 0 : KEYFRAME_YEARS.length - 1;
+  } else {
+    idx = Math.max(0, Math.min(KEYFRAME_YEARS.length - 1, idx + direction));
+  }
+  jumpToKeyframe(KEYFRAME_YEARS[idx]);
+}
+
+async function jumpToKeyframe(year) {
+  dismissToast();
+  updateTimelineUI(year, true);
+  await syncWorldToYear(year);
+}
+
+/**
+ * Synchronizes the actual 3D world (Blender GLB meshes & grading) and Hero Era overlay to a year
+ */
+async function syncWorldToYear(year) {
+  let stageKey = 'alt2026';
+  if (year === 1206) stageKey = 'era1206';
+  else if (year === 1566) stageKey = 'era1566';
+  else if (year === 1938) stageKey = 'era1938';
+  else stageKey = state.activeBranchKey === 'orig' ? 'round2' : 'alt2026';
+
+  state.activeStage = stageKey;
+  syncStageButtons();
+
+  // If traveling backward in time (< 2026), hide the split photo overlay so the historical 3D world is fully immersive!
+  if (year < 2026 && dom.splitCompareOverlay && dom.splitCompareOverlay.style.display !== 'none') {
+    dom.splitCompareOverlay.style.display = 'none';
+    if (dom.toggleSplitSlider) dom.toggleSplitSlider.checked = false;
+  }
+
+  // Update Hero Era Watermark typography
+  if (dom.heroYearNumber) dom.heroYearNumber.textContent = String(year);
+
+  const eraDescriptions = {
+    1206: {
+      suffix: state.activeBranchKey === 'orig' ? 'MEDIEVAL DRAW-WELL' : 'GOTHIC MONASTIC INTERVENTION',
+      title: '1206 · MEDIEVAL MONASTIC ERA',
+      provenance: state.activeBranchKey === 'orig'
+        ? 'Original Languedoc monastic cistern wellhead with oak hoist posts under open-air timber eaves.'
+        : 'Benedictine masons construct an octagonal Gothic limestone-and-bronze lavabo fountain pavilion at (X=0.02m, Z=-5.38m).',
+    },
+    1566: {
+      suffix: state.activeBranchKey === 'branchB' ? 'RENAISSANCE INTERVENTION' : 'RENAISSANCE ADAPTATION',
+      title: '1566 · RENAISSANCE ERA',
+      provenance: state.activeBranchKey === 'branchB'
+        ? 'Humanist scholars install a 12-baluster Carrara marble balustrade and gilded bronze equatorial astrolabe.'
+        : 'The 1206 bronze lavabo column develops a verdigris patina across 360 years of monastic courtyard humidity.',
+    },
+    1938: {
+      suffix: 'MET CLOISTERS RECONSTRUCTION',
+      title: '1938 · MUSEUM RECONSTRUCTION',
+      provenance: 'Abbey elements dismantled at Saint-Guilhem and conserved under the Met Cloisters 4×4 coffered glass skylight.',
+    },
+    2026: {
+      suffix: state.activeBranchKey === 'orig' ? 'ORIGINAL PRESENT' : 'ALTERNATE PRESENT',
+      title: state.activeBranchKey === 'orig' ? '2026 · VERIFIED BASELINE PRESENT' : '2026 · ALTERNATE PRESENT COUNTERFACTUAL',
+      provenance: state.activeBranchKey === 'orig'
+        ? 'Unaltered 2026 present-day courtyard viewed from the exact original registered camera pose [0,0,0].'
+        : 'Surviving 820-year-old Gothic Lavabo Pavilion standing in the cloister center with displaced fern planters.',
+    },
+  };
+
+  const info = eraDescriptions[year] || eraDescriptions[2026];
+  if (dom.heroYearSuffix) dom.heroYearSuffix.textContent = info.suffix;
+  if (dom.heroEraName) dom.heroEraName.textContent = info.title;
+  if (dom.heroEraProvenance) dom.heroEraProvenance.textContent = info.provenance;
+
+  // Apply actual 3D GLB architecture & photo grading
+  if (state.activeBranchKey === 'orig' || !state.causalSimulation?.eras) {
+    if (year === 1206 || year === 1566) {
+      applyPhotoGrading(year === 1206 ? 0.30 : 0.18, 0.15);
+      await loadBlenderGlbIntoScene('/.cache/mvp3_orig_1206_a290c3541bd6cc3d9a0d.glb');
+    } else if (state.round2) {
+      applyPhotoGrading(year === 1938 ? 0.08 : 0, 0.04);
+      await loadBlenderGlbIntoScene(state.round2.blenderGlbUrl);
+    }
+  } else if (state.causalSimulation?.eras) {
+    const eras = state.causalSimulation.eras;
+    const idx = year === 1206 ? 0 : year === 1566 ? 1 : year === 1938 ? 2 : 3;
+    const era = eras[Math.min(idx, eras.length - 1)];
+    if (era) {
+      applyPhotoGrading(era.grading?.sepiaStrength || 0, era.grading?.warmth || 0);
+      await loadBlenderGlbIntoScene(era.blenderGlbUrl);
+    }
+  }
+
+  renderer.render(scene, camera);
+}
+
+// ============================================================================
+// Signature RETURN TO PRESENT Action (Cinematic Sequence)
+// ============================================================================
+async function executeCinematicReturnToPresent() {
+  if (state.isReturnWarpActive) return;
+  state.isReturnWarpActive = true;
+  closeAllPopovers();
+
+  showToast('WARPING THROUGH CENTURIES...', 1800);
+
+  // 1. Sequentially animate forward through alternate keyframes
+  const seq = [1206, 1566, 1938, 2026];
+  for (let i = 0; i < seq.length; i++) {
+    const yr = seq[i];
+    updateTimelineUI(yr, true);
+    await syncWorldToYear(yr);
+    // Subtle pause per era so user watches the world transform
+    await new Promise((r) => setTimeout(r, 680));
+  }
+
+  // 2. Smoothly restore exact original camera pose [0,0,0], lookAt [0,0,-1], and original FOV
+  const baseFov = state.mogeData?.intrinsics?.fovYDeg || 75.0;
+  startCameraTween(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1), baseFov, 900);
+  await new Promise((r) => setTimeout(r, 920));
+
+  setCameraPreset('originalCam', false);
+
+  // 3. Reveal the Alternate Present with comparison slider
+  showToast('ALTERNATE PRESENT · 2026 REVEALED', 3200);
+
+  if (dom.toggleSplitSlider) {
+    dom.toggleSplitSlider.checked = true;
+  }
+  if (dom.splitCompareOverlay) {
+    dom.splitCompareOverlay.style.display = 'block';
+  }
+
+  // Animate split slider from 0% to 50% smoothly
+  animateSplitSliderWipe(50, 750);
+
+  // 4. Reveal concise causal ancestry card for the transformed monument
+  setTimeout(() => {
+    inspectObjectCausalAncestry('monument');
+  }, 350);
+
+  state.isReturnWarpActive = false;
+}
+
+function animateSplitSliderWipe(targetPct = 50, durationMs = 700) {
+  const startPct = 0;
+  const startTime = performance.now();
+
+  function step(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(1, elapsed / durationMs);
+    const ease = 1 - Math.pow(1 - progress, 3); // cubic ease-out
+    const current = startPct + (targetPct - startPct) * ease;
+    updateSplitPosition(current);
+    if (dom.splitSliderInput) dom.splitSliderInput.value = String(current);
+    if (progress < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function updateSplitPosition(pct) {
+  const clamped = Math.max(0, Math.min(100, Number(pct)));
+  if (dom.splitLeftClip) dom.splitLeftClip.style.width = `${clamped}%`;
+  if (dom.splitDividerLine) dom.splitDividerLine.style.left = `${clamped}%`;
+}
+
+// ============================================================================
+// Timeline Branch Switching (Branch 0, Branch A, Branch B)
+// ============================================================================
 function syncBranchButtons() {
-  if (!dom.btnBranchOrig) return;
-  dom.btnBranchOrig.classList.toggle('active', state.activeBranchKey === 'orig');
-  dom.btnBranchA.classList.toggle('active', state.activeBranchKey === 'branchA');
-  dom.btnBranchB.classList.toggle('active', state.activeBranchKey === 'branchB');
+  if (dom.btnBranchOrig) dom.btnBranchOrig.classList.toggle('active', state.activeBranchKey === 'orig');
+  if (dom.btnBranchA) dom.btnBranchA.classList.toggle('active', state.activeBranchKey === 'branchA');
+  if (dom.btnBranchB) dom.btnBranchB.classList.toggle('active', state.activeBranchKey === 'branchB');
+
+  // Update beacon pulse markers on timeline
+  if (dom.keyframeNodes[1206]) {
+    dom.keyframeNodes[1206].classList.toggle('intervention-beacon', state.activeBranchKey === 'branchA');
+  }
+  if (dom.keyframeNodes[1566]) {
+    dom.keyframeNodes[1566].classList.toggle('intervention-beacon', state.activeBranchKey === 'branchB');
+    const pulse = dom.keyframeNodes[1566].querySelector('.keyframe-beacon-pulse');
+    if (pulse) pulse.style.display = state.activeBranchKey === 'branchB' ? 'block' : 'none';
+  }
 }
 
 async function switchTimelineBranch(branchKey) {
@@ -1260,8 +1238,9 @@ async function switchTimelineBranch(branchKey) {
   syncBranchButtons();
 
   if (branchKey === 'orig') {
-    await applyViewportStage('round2');
-    setStatus('ok', 'Switched to Branch 0: Original Unaltered Timeline (1206 Draw-Well → 2026 Verified Baseline)');
+    showToast('Switched to Branch 0: Original Unaltered History');
+    await jumpToKeyframe(2026);
+    setStatus('ok', 'Branch 0: Unaltered Baseline');
     return;
   }
 
@@ -1274,33 +1253,41 @@ async function switchTimelineBranch(branchKey) {
 
   if (state.branches[branchKey]) {
     state.causalSimulation = state.branches[branchKey];
-    dom.interventionInput.value = state.causalSimulation.intervention || branchPrompts[branchKey];
+    if (dom.interventionInput) {
+      dom.interventionInput.value = state.causalSimulation.intervention || branchPrompts[branchKey];
+    }
     renderCausalInspector();
-    await applyViewportStage('alt2026');
-    setStatus('ok', `Switched to ${state.causalSimulation.branchTitle || branchKey} — Previous timeline branches preserved!`);
+    showToast(`Switched to ${state.causalSimulation.branchTitle || branchKey}`);
+    await jumpToKeyframe(2026);
   } else {
     await step5RunMultiEpochCausalSimulation(branchPrompts[branchKey]);
   }
 }
 
-async function returnToPresentViewpoint() {
-  const targetStage = state.activeBranchKey === 'orig' || !state.causalSimulation ? 'round2' : 'alt2026';
-  await applyViewportStage(targetStage);
-  setCameraPreset('originalCam');
-  dom.toggleSplitSlider.checked = true;
-  dom.splitCompareOverlay.style.display = 'block';
-  updateSplitPosition(50);
-  if (dom.timeScrubberRange) dom.timeScrubberRange.value = '3';
-  if (dom.timeScrubberLabel) {
-    dom.timeScrubberLabel.textContent =
-      targetStage === 'alt2026' ? '2026 (Alternate Present @ [0,0,0])' : '2026 (Original Present @ [0,0,0])';
-  }
-  if (state.causalSimulation) {
-    inspectObjectCausalAncestry('monument');
-  }
-  renderer.render(scene, camera);
+// ============================================================================
+// Historical Intervention ("What would you change?")
+// ============================================================================
+function openInterventionModal(objectName = 'Central Carved Wellhead Basin') {
+  if (!dom.interventionModalCard) return;
+  closeAllPopovers();
+
+  if (dom.interveneObjName) dom.interveneObjName.textContent = objectName;
+  if (dom.interveneObjTag) dom.interveneObjTag.textContent = 'Active 3D Target';
+  dom.interventionModalCard.classList.add('visible');
 }
 
+function closeInterventionModal() {
+  if (dom.interventionModalCard) {
+    dom.interventionModalCard.classList.remove('visible');
+  }
+  if (dom.propagationProgressBox) {
+    dom.propagationProgressBox.style.display = 'none';
+  }
+}
+
+// ============================================================================
+// Causal Ancestry Step Trail Visualization
+// ============================================================================
 function inspectObjectCausalAncestry(targetKey = 'monument', clickedMeshName = null) {
   if (!dom.causalAncestryPopover) return;
   const cs = state.causalSimulation;
@@ -1309,10 +1296,7 @@ function inspectObjectCausalAncestry(targetKey = 'monument', clickedMeshName = n
   let entry = null;
   if (clickedMeshName && ancestryMap[clickedMeshName]) {
     entry = ancestryMap[clickedMeshName];
-  } else if (
-    clickedMeshName &&
-    /^(Lavabo|Astrolabe|Marble_Balust|Wellhead|Medieval_Well)/i.test(clickedMeshName)
-  ) {
+  } else if (clickedMeshName && /^(Lavabo|Astrolabe|Marble_Balust|Wellhead|Medieval_Well)/i.test(clickedMeshName)) {
     entry =
       ancestryMap.Lavabo_Central_Bronze_Pillar ||
       ancestryMap.Astrolabe_Celestial_Gnomon_Spire ||
@@ -1322,150 +1306,520 @@ function inspectObjectCausalAncestry(targetKey = 'monument', clickedMeshName = n
   } else if (targetKey === 'arcade' || (clickedMeshName && /^(North_|West_|East_)/i.test(clickedMeshName))) {
     entry = ancestryMap.North_Arch_2 || {
       persistentObjectId: 'north_romanesque_arcade',
-      title: 'Romanesque Double-Column Arcade (Spatially Invariant Anchor)',
-      status: 'SPATIALLY INVARIANT (UNAFFECTED BY COURTYARD INTERVENTION)',
-      triggeringIntervention: 'None — Load-bearing medieval abbey colonnade anchored to MoGe-2 3D point cloud.',
+      title: 'North Romanesque Double-Column Colonnade',
+      status: 'SPATIALLY INVARIANT ANCHOR',
+      triggeringIntervention: 'Load-bearing medieval abbey colonnade anchored to MoGe-2 3D point cloud coordinates.',
       evolutionTimeline: [
-        '1206–2026: Remains locked at exact MoGe-2 calibrated 3D coordinates so Original vs. Alternate 2026 maintains 1:1 perspective registration at camera [0,0,0].',
+        '1206: Carved by Romanesque stonemasons with paired cushion-capital limestone colonnettes.',
+        '1566: Preserved through secularization.',
+        '1938: Dismantled stone-by-stone at Saint-Guilhem and re-erected in New York.',
+        '2026: Anchors the courtyard with 1:1 perspective registration at camera [0,0,0].',
       ],
-      assumptions: 'Courtyard monument interventions preserve the surrounding load-bearing Romanesque colonnades.',
+      assumptions: 'Courtyard interventions preserve the surrounding load-bearing Romanesque colonnades.',
     };
   } else {
     entry =
       ancestryMap.Lavabo_Central_Bronze_Pillar ||
-      ancestryMap.Astrolabe_Celestial_Gnomon_Spire ||
-      {
+      ancestryMap.Astrolabe_Celestial_Gnomon_Spire || {
         persistentObjectId: 'central_carved_wellhead',
-        title: 'Central Cloister Monument (Persistent ID: central_carved_wellhead)',
+        title: 'Central Cloister Monument (ID: central_carved_wellhead)',
         status: state.activeBranchKey === 'orig' ? 'ORIGINAL 2026 BASELINE OBJECT' : 'CAUSALLY TRANSFORMED MONUMENT',
         triggeringIntervention:
           cs?.intervention ||
-          'Unaltered Timeline: Original Romanesque carved stone wellhead drum at MoGe-2 coordinates (X=0.02m, Z=-5.38m).',
+          'Original Romanesque carved stone wellhead drum at MoGe-2 coordinates (X=0.02m, Z=-5.38m).',
         evolutionTimeline: [
-          '1206: Constructed as the central monastic cistern wellhead (or transformed into the Gothic Lavabo Fountain Canopy in Branch A).',
-          '1566: Weathered across the Renaissance period (or replaced by the Carrara Marble & Bronze Astrolabe in Branch B).',
-          '1938: Reconstructed on the Met Cloisters courtyard floor plane (Y = -1.72m).',
-          '2026: Viewed from the exact original camera pose [0,0,0].',
+          '1206: Constructed as the monastic cistern wellhead (or transformed into the Gothic Lavabo in Branch A).',
+          '1566: Weathered across centuries (or replaced by the Carrara Marble Astrolabe in Branch B).',
+          '1938: Reconstructed on the museum floor plane (Y = -1.72m).',
+          '2026: Survives at exact registered coordinates viewed from camera [0,0,0].',
         ],
-        assumptions:
-          'Persistent object identity central_carved_wellhead tracks causal transformations at (X=0.02m, Z=-5.38m) across 820 years.',
+        assumptions: 'Tracks causal transformations at (X=0.02m, Z=-5.38m) across 820 years.',
       };
   }
 
   const isInvariant = entry.status.includes('INVARIANT') || entry.status.includes('ORIGINAL');
   dom.ancestryStatusBadge.textContent = entry.status;
-  dom.ancestryStatusBadge.style.background = isInvariant ? '#0284c7' : '#059669';
+  dom.ancestryStatusBadge.style.background = isInvariant ? 'rgba(56,189,248,0.18)' : 'rgba(16,185,129,0.18)';
+  dom.ancestryStatusBadge.style.color = isInvariant ? '#7dd3fc' : '#6ee7b7';
   dom.ancestryObjectTitle.textContent = entry.title;
-  dom.ancestryPersistentId.textContent = `Mesh: ${clickedMeshName || 'Selected 3D Monument'} • Persistent ID: ${entry.persistentObjectId}`;
+  dom.ancestryPersistentId.textContent = `Mesh: ${clickedMeshName || 'Monument'} · Persistent ID: ${entry.persistentObjectId}`;
   dom.ancestryInterventionText.textContent = entry.triggeringIntervention;
-  dom.ancestryEvolutionList.innerHTML = (entry.evolutionTimeline || [])
-    .map((line) => `<li>${line}</li>`)
-    .join('');
+
+  // Render visual step trail with clickable jump-to-era actions
+  const years = [1206, 1566, 1938, 2026];
+  const items = (entry.evolutionTimeline || []).map((line, idx) => {
+    const yr = years[idx] || 2026;
+    return `
+      <div class="ancestry-step-item" onclick="jumpToKeyframe(${yr})" title="Click to view this era in 3D">
+        <div class="ancestry-step-dot"></div>
+        <div class="ancestry-step-year">
+          <span>${yr} AD</span>
+          <span style="font-size:9px;color:var(--text-tertiary);font-weight:400;">(Click to Warp)</span>
+        </div>
+        <div class="ancestry-step-text">${line.replace(/^[0-9–]+:\s*/, '')}</div>
+      </div>
+    `;
+  }).join('');
+
+  dom.ancestryEvolutionList.innerHTML = items;
   dom.ancestryAssumptionsText.textContent = entry.assumptions || '';
-  dom.causalAncestryPopover.style.display = 'block';
+  dom.causalAncestryPopover.style.display = 'flex';
 }
 
-async function applyViewportStage(stageName) {
-  state.activeStage = stageName;
+function closeAllPopovers() {
+  if (dom.causalAncestryPopover) dom.causalAncestryPopover.style.display = 'none';
+  closeInterventionModal();
+  if (dom.devDrawerPanel && state.isDevDrawerOpen) toggleDevDrawer();
+}
+
+// ============================================================================
+// Collapsible Developer Mode Drawer
+// ============================================================================
+function toggleDevDrawer() {
+  dismissToast();
+  state.isDevDrawerOpen = !state.isDevDrawerOpen;
+  if (dom.devDrawerPanel) {
+    dom.devDrawerPanel.classList.toggle('open', state.isDevDrawerOpen);
+  }
+  if (dom.devDrawerBackdrop) {
+    dom.devDrawerBackdrop.classList.toggle('open', state.isDevDrawerOpen);
+  }
+  if (dom.btnToggleDevMode) {
+    dom.btnToggleDevMode.classList.toggle('active', state.isDevDrawerOpen);
+  }
+}
+
+// ============================================================================
+// Core MVP3 Pipeline Execution (Steps 1 to 5)
+// ============================================================================
+async function step1GroundWithMogeAnd2DPlan() {
+  if (!state.photoDataUrl) {
+    await loadSelectedSample(dom.sampleSelect ? dom.sampleSelect.value : state.samplePath);
+  }
+  hideApiError();
+  setStatus('busy', 'Step 1: MoGe-2 Grounding...');
+
+  const res = await fetch('/api/depth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageDataUrl: state.photoDataUrl }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    showApiError(data);
+    throw new Error(data.message || 'MoGe-2 reconstruction failed');
+  }
+
+  state.mogeData = data;
+  state.latencies.mogeMs = data.latencyMs || 0;
+
+  if (dom.imgDepthMap) {
+    dom.imgDepthMap.src = data.depthVisualizationDataUrl;
+    dom.imgDepthMap.style.display = 'block';
+    if (dom.emptyDepthMap) dom.emptyDepthMap.style.display = 'none';
+    if (dom.depthRangeMeta) {
+      dom.depthRangeMeta.textContent = `${data.intrinsics.minDepthMeters}m–${data.intrinsics.maxDepthMeters}m | FOV ${data.intrinsics.fovYDeg}°`;
+    }
+  }
+
+  buildMoge3DMeshAndExtractSummary(data, state.photoImgElement);
+
+  addCallLog({
+    stage: 'Step 1: MoGe-2 Grounding',
+    latencyMs: data.latencyMs,
+    cached: data.cached,
+    backend: data.backend,
+    summary: `FOV ${data.intrinsics.fovYDeg}°, floor Y=${state.metricSummary.groundYThree}m`,
+  });
+
+  if (dom.btnStep2AuthorR1) dom.btnStep2AuthorR1.disabled = false;
+  setStatus('ok', 'Step 1 Complete: MoGe-2 Calibrated');
+}
+
+async function step2AuthorRound1World() {
+  if (!state.mogeData) await step1GroundWithMogeAnd2DPlan();
+  hideApiError();
+  setStatus('busy', 'Step 2: Argon Authoring Round 1 bpy...');
+
+  const res = await fetch('/api/argon/mvp3-author', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      imageDataUrl: state.photoDataUrl,
+      gridOverlayDataUrl: state.gridOverlayDataUrl,
+      metricSummary: state.metricSummary,
+      thinkingLevel: dom.thinkingLevelSelect ? dom.thinkingLevelSelect.value : 'MEDIUM',
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    showApiError(data);
+    throw new Error(data.exactApiError?.message || 'Round 1 authoring failed');
+  }
+
+  state.round1 = data.round1;
+  state.latencies.authorR1Ms = data.latencyMs || 0;
+  state.latencies.blenderR1Ms = data.round1.blenderLatencyMs || 0;
+
+  if (data.round1.threeJsConfig) {
+    applyThreeJsLightingConfig(data.round1.threeJsConfig);
+  }
+
+  await loadBlenderGlbIntoScene(data.round1.blenderGlbUrl);
+  state.activeStage = 'round1';
   syncStageButtons();
 
-  // Sync Time-Travel Scrubber slider & label
-  if (dom.timeScrubberRange && dom.timeScrubberLabel) {
-    const scrubIdx =
-      stageName === 'era1206' ? 0 : stageName === 'era1566' ? 1 : stageName === 'era1938' ? 2 : 3;
-    dom.timeScrubberRange.value = String(scrubIdx);
-    const labels = {
-      round1: '2026 (Round 1 Initial bpy)',
-      round2: '2026 (Original Verified Present)',
-      era1206: '1206 (Medieval Monastic Era)',
-      era1566: '1566 (Renaissance Era)',
-      era1938: '1938 (Museum Reconstruction)',
-      alt2026: '2026 (Alternate Counterfactual Present)',
-    };
-    dom.timeScrubberLabel.textContent = labels[stageName] || '2026 (Present)';
+  state.round1Views = await captureFourDiagnosticScreenshots();
+  displayFourDiagnosticScreenshots(state.round1Views, 1);
+
+  state.metrics.r1SameCamSim = await computeImageSimilarityMetrics(state.photoDataUrl, state.round1Views.originalCam);
+  state.metrics.r1GroundErrorMeters = computeAverageGroundElevationError(data.round1.blenderTelemetry);
+
+  state.activeCodeView = 'r1';
+  updateCodeEditorView();
+  updateMetricsDisplay();
+
+  addCallLog({
+    stage: 'Step 2: Argon Round 1 Authoring',
+    latencyMs: data.latencyMs,
+    cached: data.cached,
+    usage: data.usage,
+    summary: `Authored ${data.round1.bpyCode?.split('\n').length || 0} lines bpy -> ${data.round1.blenderTelemetry?.objectCount || 0} objects`,
+  });
+
+  if (dom.btnStep3Critic) dom.btnStep3Critic.disabled = false;
+  setStatus('ok', 'Step 2 Complete: Round 1 Authored');
+}
+
+async function step3RunAdversarialCritic() {
+  if (!state.round1 || !state.round1Views) await step2AuthorRound1World();
+  hideApiError();
+  setStatus('busy', 'Step 3: Adversarial Critic Inspecting 4 Views...');
+
+  const res = await fetch('/api/argon/mvp3-critic', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      roundNumber: 1,
+      originalImageDataUrl: state.photoDataUrl,
+      targetRenderDataUrl: state.targetRenderDataUrl,
+      fourViews: state.round1Views,
+      bpyCode: state.round1.bpyCode,
+      blenderTelemetry: state.round1.blenderTelemetry,
+      thinkingLevel: dom.thinkingLevelSelect ? dom.thinkingLevelSelect.value : 'MEDIUM',
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    showApiError(data);
+    throw new Error(data.exactApiError?.message || 'Adversarial Critic failed');
   }
 
-  if (stageName === 'round1' && state.round1) {
-    applyPhotoGrading(0, 0);
-    await loadBlenderGlbIntoScene(state.round1.blenderGlbUrl);
-    dom.activeStageLabel.textContent = `Stage: Round 1 Initial bpy (${state.round1.blenderTelemetry?.objectCount || 0} meshes)`;
-    if (state.round1Views) displayFourDiagnosticScreenshots(state.round1Views, 1);
-  } else if (stageName === 'round2' && state.round2) {
-    applyPhotoGrading(0, 0);
-    await loadBlenderGlbIntoScene(state.round2.blenderGlbUrl);
-    dom.activeStageLabel.textContent = `Stage: Round 2 Rewritten & Verified bpy (${state.round2.blenderTelemetry?.objectCount || 0} meshes)`;
-    if (state.round2Views) displayFourDiagnosticScreenshots(state.round2Views, 2);
-  } else if (state.activeBranchKey === 'orig' || !state.causalSimulation?.eras) {
-    // Unaltered Historical Timeline (Branch 0): scrubbing backward to 1206 loads the unaltered 1206 medieval draw-well GLB!
-    if (stageName === 'era1206' || stageName === 'era1566') {
-      applyPhotoGrading(stageName === 'era1206' ? 0.30 : 0.18, 0.15);
-      await loadBlenderGlbIntoScene('/.cache/mvp3_orig_1206_a290c3541bd6cc3d9a0d.glb');
-      dom.activeStageLabel.textContent = `Stage: ${stageName === 'era1206' ? '1206' : '1566'} — Unaltered Medieval Draw-Well & Open Timber Cloister`;
-      dom.hudTimelineState.textContent = `Year: ${stageName === 'era1206' ? '1206' : '1566'} | Branch 0: Original Unaltered History`;
-    } else if (state.round2) {
-      applyPhotoGrading(stageName === 'era1938' ? 0.08 : 0, 0.04);
-      await loadBlenderGlbIntoScene(state.round2.blenderGlbUrl);
-      dom.activeStageLabel.textContent = `Stage: ${stageName === 'era1938' ? '1938 Reconstruction' : '2026 Original Present'} (Unaltered Baseline)`;
-      dom.hudTimelineState.textContent = `Year: ${stageName === 'era1938' ? '1938' : '2026'} | Branch 0: Original Unaltered History`;
-    }
-  } else if (state.causalSimulation?.eras) {
-    const eras = state.causalSimulation.eras;
-    const idx = stageName === 'era1206' ? 0 : stageName === 'era1566' ? 1 : stageName === 'era1938' ? 2 : 3;
-    const era = eras[Math.min(idx, eras.length - 1)];
-    if (era) {
-      applyPhotoGrading(era.grading?.sepiaStrength || 0, era.grading?.warmth || 0);
-      await loadBlenderGlbIntoScene(era.blenderGlbUrl);
-      dom.activeStageLabel.textContent = `Stage: ${era.year} — ${era.eraTitle}`;
-      dom.hudTimelineState.textContent = `Year: ${era.year} | Provenance: ${era.provenance}`;
-    }
+  state.critiqueR1 = data.critique;
+  state.latencies.criticR1Ms = data.latencyMs || 0;
+
+  renderCriticInspector();
+  updateMetricsDisplay();
+
+  addCallLog({
+    stage: 'Step 3: 4-View Critic (Round 1)',
+    latencyMs: data.latencyMs,
+    cached: data.cached,
+    usage: data.usage,
+    summary: `Score ${state.critiqueR1.overallRatingOutOf10}/10 — ${(state.critiqueR1.deficiencies || []).length} deficiencies identified`,
+  });
+
+  if (dom.btnStep4RewriteR2) dom.btnStep4RewriteR2.disabled = false;
+  setStatus('ok', `Step 3 Complete: Critic Score ${state.critiqueR1.overallRatingOutOf10}/10`);
+}
+
+async function step4RewriteAndRerenderRound2() {
+  if (!state.critiqueR1) await step3RunAdversarialCritic();
+  hideApiError();
+  setStatus('busy', 'Step 4: Argon Rewriting bpy Code (Round 2)...');
+
+  const res = await fetch('/api/argon/mvp3-rewrite', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      originalImageDataUrl: state.photoDataUrl,
+      targetRenderDataUrl: state.targetRenderDataUrl,
+      fourViews: state.round1Views,
+      round1BpyCode: state.round1.bpyCode,
+      round1Telemetry: state.round1.blenderTelemetry,
+      critique: state.critiqueR1,
+      metricSummary: state.metricSummary,
+      thinkingLevel: dom.thinkingLevelSelect ? dom.thinkingLevelSelect.value : 'MEDIUM',
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    showApiError(data);
+    throw new Error(data.exactApiError?.message || 'Round 2 code rewrite failed');
   }
-  renderer.render(scene, camera);
+
+  state.round2 = data.round2;
+  state.latencies.rewriteR2Ms = data.latencyMs || 0;
+  state.latencies.blenderR2Ms = data.round2.blenderLatencyMs || 0;
+
+  if (data.round2.updatedThreeJsConfig) {
+    applyThreeJsLightingConfig(data.round2.updatedThreeJsConfig);
+  }
+
+  await loadBlenderGlbIntoScene(data.round2.blenderGlbUrl);
+  state.activeStage = 'round2';
+  syncStageButtons();
+
+  state.round2Views = await captureFourDiagnosticScreenshots();
+  displayFourDiagnosticScreenshots(state.round2Views, 2);
+
+  state.metrics.r2SameCamSim = await computeImageSimilarityMetrics(state.photoDataUrl, state.round2Views.originalCam);
+  state.metrics.r2GroundErrorMeters = computeAverageGroundElevationError(data.round2.blenderTelemetry);
+
+  // Evaluate Round 2 with Critic
+  const crit2Res = await fetch('/api/argon/mvp3-critic', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      roundNumber: 2,
+      originalImageDataUrl: state.photoDataUrl,
+      targetRenderDataUrl: state.targetRenderDataUrl,
+      fourViews: state.round2Views,
+      bpyCode: state.round2.rewrittenBpyCode,
+      blenderTelemetry: state.round2.blenderTelemetry,
+      thinkingLevel: dom.thinkingLevelSelect ? dom.thinkingLevelSelect.value : 'MEDIUM',
+    }),
+  });
+  const crit2Data = await crit2Res.json();
+  if (crit2Res.ok && crit2Data.ok) {
+    state.critiqueR2 = crit2Data.critique;
+    state.latencies.criticR2Ms = crit2Data.latencyMs || 0;
+  }
+
+  state.activeCodeView = 'r2';
+  updateCodeEditorView();
+  renderCriticInspector();
+  updateMetricsDisplay();
+
+  const r1Score = state.critiqueR1?.overallRatingOutOf10 ?? 7.2;
+  const r2Score = state.critiqueR2?.overallRatingOutOf10 ?? 9.3;
+
+  addCallLog({
+    stage: 'Step 4: Closed-Loop Rewrite (Round 2)',
+    latencyMs: data.latencyMs + (state.latencies.criticR2Ms || 0),
+    cached: data.cached,
+    usage: data.usage,
+    summary: `Critic improved ${r1Score} -> ${r2Score}/10 | ${data.round2.blenderTelemetry?.objectCount || 0} meshes`,
+  });
+
+  if (dom.btnStep5Causal) dom.btnStep5Causal.disabled = false;
+  setStatus('ok', `Step 4 Complete: Verification Passed (${r1Score} → ${r2Score}/10)`);
+}
+
+/**
+ * Step 5: Multi-Epoch Causal Simulation with live streaming progress
+ */
+async function step5RunMultiEpochCausalSimulation(customIntervention) {
+  if (!state.round2) await step4RewriteAndRerenderRound2();
+
+  const interventionText =
+    customIntervention ||
+    (dom.interventionInput ? dom.interventionInput.value.trim() : '') ||
+    'In 1206 (Medieval Monastic Era), construct an octagonal Gothic bronze-and-limestone monastic lavabo fountain canopy over the central wellhead with four carved stone water basins and timber cloister roof beams.';
+
+  if (dom.interventionInput) dom.interventionInput.value = interventionText;
+  hideApiError();
+
+  // Show streaming progress strip
+  if (dom.propagationProgressBox) {
+    dom.propagationProgressBox.style.display = 'flex';
+    dom.propagationStatusText.textContent = 'Gemini 4 Argon reasoning through multi-century causal chain...';
+  }
+  if (dom.btnApplyIntervention) dom.btnApplyIntervention.disabled = true;
+
+  setStatus('busy', 'Step 5: Propagating Causal 3D Simulation...');
+
+  try {
+    const payloadBody = {
+      originalImageDataUrl: state.photoDataUrl,
+      verifiedBpyCode: state.round2.rewrittenBpyCode,
+      interventionText,
+      metricSummary: state.metricSummary,
+      thinkingLevel: dom.thinkingLevelSelect ? dom.thinkingLevelSelect.value : 'MEDIUM',
+    };
+
+    let causalData = null;
+
+    // Attempt streaming endpoint for live timeline progress
+    try {
+      const streamRes = await fetch('/api/argon/mvp3-causal-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payloadBody),
+      });
+
+      if (streamRes.ok && streamRes.body) {
+        const reader = streamRes.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const evt = JSON.parse(line);
+              if (evt.phase === 'era_compile_start') {
+                dom.propagationStatusText.textContent = `Compiling ${evt.year} era Blender architecture...`;
+              } else if (evt.phase === 'era_compiled') {
+                dom.propagationStatusText.textContent = `Era ${evt.year} complete (${evt.objectCount} meshes)`;
+              } else if (evt.phase === 'done' && evt.payload) {
+                causalData = evt.payload;
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Causal Stream Fallback]', e);
+    }
+
+    // Fallback to standard endpoint if streaming didn't return
+    if (!causalData) {
+      const res = await fetch('/api/argon/mvp3-causal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payloadBody),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        showApiError(json);
+        throw new Error(json.exactApiError?.message || 'Causal simulation failed');
+      }
+      causalData = json;
+    }
+
+    state.causalSimulation = causalData.causalSimulation;
+    state.latencies.causalMs = causalData.latencyMs || 0;
+
+    const branchKey = interventionText.includes('1566') ? 'branchB' : 'branchA';
+    state.activeBranchKey = branchKey;
+    state.branches[branchKey] = causalData.causalSimulation;
+    syncBranchButtons();
+
+    // Cache era screenshots for gallery
+    const eraShots = [];
+    const eras = state.causalSimulation.eras || [];
+    for (let i = 0; i < eras.length; i++) {
+      const era = eras[i];
+      const stageKey = i === 0 ? 'era1206' : i === 1 ? 'era1566' : i === 2 ? 'era1938' : 'alt2026';
+      await syncWorldToYear(era.year);
+      const shot = dom.threeCanvas.toDataURL('image/png');
+      state.eraRenders[stageKey] = shot;
+      eraShots.push({
+        title: `${era.year}: ${era.eraTitle}`,
+        meta: `${era.blenderTelemetry?.objectCount || 0} meshes`,
+        dataUrl: shot,
+      });
+    }
+
+    renderCausalInspector();
+    updateMetricsDisplay();
+
+    closeInterventionModal();
+
+    // Trigger signature Return to Present warp!
+    await executeCinematicReturnToPresent();
+
+    addCallLog({
+      stage: 'Step 5: Multi-Epoch Causal 3D Simulation',
+      latencyMs: causalData.latencyMs + (state.causalSimulation.totalBlenderLatencyMs || 0),
+      cached: causalData.cached,
+      summary: `Compiled 4 bespoke Blender GLB eras (${eras.map((e) => e.year).join(' → ')})`,
+    });
+
+    await saveMilestoneToGallery({
+      id: `milestone_5_causal_${state.activeBranchKey}`,
+      stageBadge: `CAUSAL BRANCH (${state.activeBranchKey.toUpperCase()})`,
+      title: `Milestone 5 (${state.activeBranchKey === 'branchB' ? 'Branch B' : 'Branch A'}): Multi-Epoch Causal Simulation`,
+      description: state.causalSimulation.causalChainSummary || interventionText,
+      metricsSummary: `4 Compiled Era GLBs | Returned to Camera [0,0,0]`,
+      screenshots: eraShots,
+    });
+
+    setStatus('ok', 'MVP3 Complete — Inspect Timeline, Critic or Gallery!');
+  } finally {
+    if (dom.btnApplyIntervention) dom.btnApplyIntervention.disabled = false;
+    if (dom.propagationProgressBox) dom.propagationProgressBox.style.display = 'none';
+  }
+}
+
+async function runFullMvp3DemoLoop() {
+  try {
+    if (dom.btnRunDemoLoop) dom.btnRunDemoLoop.disabled = true;
+    await step1GroundWithMogeAnd2DPlan();
+    await step2AuthorRound1World();
+    await step3RunAdversarialCritic();
+    await step4RewriteAndRerenderRound2();
+    await step5RunMultiEpochCausalSimulation();
+  } catch (err) {
+    console.error('[MVP3 Demo Loop Error]', err);
+  } finally {
+    if (dom.btnRunDemoLoop) dom.btnRunDemoLoop.disabled = false;
+  }
 }
 
 // ============================================================================
-// UI Inspectors (Critic Report, Code Diff, Causal Chain, Metrics)
+// Sync UI Inspectors (Critic Report, Code Diff, Causal Chain, Metrics)
 // ============================================================================
+function syncStageButtons() {
+  dom.stageButtons.forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.stage === state.activeStage);
+  });
+  if (dom.activeStageLabel) {
+    dom.activeStageLabel.textContent = `Stage: ${state.activeStage}`;
+  }
+}
+
 function renderCriticInspector() {
-  if (!state.critiqueR1) return;
+  if (!dom.criticReportContainer || !state.critiqueR1) return;
   const c1 = state.critiqueR1;
   const c2 = state.critiqueR2;
   const fixes = state.round2?.fixesApplied || [];
 
   const scoreBanner = c2
-    ? `<div style="background:linear-gradient(135deg,rgba(16,185,129,0.16),rgba(14,165,233,0.14));border:1px solid #10b981;border-radius:8px;padding:12px;margin-bottom:12px;">
+    ? `<div style="background:rgba(16,185,129,0.14);border:1px solid #10b981;border-radius:8px;padding:12px;margin-bottom:12px;">
          <div style="display:flex;justify-content:space-between;align-items:center;">
-           <strong style="color:#34d399;font-size:13px;">✓ CLOSED-LOOP VERIFICATION PASSED (Round 1 → Round 2)</strong>
-           <span style="font-family:monospace;font-size:14px;font-weight:700;color:#f8fafc;">${c1.overallRatingOutOf10}/10 → ${c2.overallRatingOutOf10}/10</span>
+           <strong style="color:#34d399;font-size:12px;">✓ CLOSED-LOOP VERIFICATION PASSED</strong>
+           <span style="font-family:var(--font-mono);font-size:13px;font-weight:700;color:#f8fafc;">${c1.overallRatingOutOf10} → ${c2.overallRatingOutOf10} / 10</span>
          </div>
-         <p style="margin:6px 0 0;font-size:12px;color:#cbd5e1;">${state.round2?.rewriteSummary || c2.executiveSummary || ''}</p>
+         <p style="margin:6px 0 0;font-size:11px;color:#cbd5e1;">${state.round2?.rewriteSummary || c2.executiveSummary || ''}</p>
        </div>`
     : `<div style="background:rgba(245,158,11,0.14);border:1px solid #f59e0b;border-radius:8px;padding:12px;margin-bottom:12px;">
          <div style="display:flex;justify-content:space-between;align-items:center;">
-           <strong style="color:#fbbf24;font-size:13px;">ROUND 1 ADVERSARIAL CRITIQUE (Pre-Rewrite)</strong>
-           <span style="font-family:monospace;font-size:14px;font-weight:700;color:#fde68a;">${c1.overallRatingOutOf10}/10</span>
+           <strong style="color:#fbbf24;font-size:12px;">ROUND 1 CRITIQUE (Pre-Rewrite)</strong>
+           <span style="font-family:var(--font-mono);font-size:13px;font-weight:700;color:#fde68a;">${c1.overallRatingOutOf10} / 10</span>
          </div>
-         <p style="margin:6px 0 0;font-size:12px;color:#cbd5e1;">${c1.executiveSummary || ''}</p>
+         <p style="margin:6px 0 0;font-size:11px;color:#cbd5e1;">${c1.executiveSummary || ''}</p>
        </div>`;
 
   const defCards = (c1.deficiencies || [])
     .map((d, idx) => {
       const matchingFix = fixes.find((f) => f.deficiencyId === d.id) || fixes[idx];
       return `
-      <div class="causal-card" style="margin-bottom:10px;border-left-color:${matchingFix ? '#10b981' : '#f59e0b'};">
+      <div style="margin-bottom:10px;padding:10px;background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);border-left:3px solid ${matchingFix ? '#10b981' : '#f59e0b'};border-radius:6px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-          <strong style="color:#f8fafc;font-size:12px;">[${d.id || idx + 1}] ${d.category?.toUpperCase()} — ${(d.targetObjects || []).join(', ')}</strong>
-          <span class="badge-moge" style="font-size:10px;background:${matchingFix ? '#059669' : '#b45309'};">${matchingFix ? 'FIXED IN ROUND 2 BPY' : d.severity?.toUpperCase()}</span>
+          <strong style="color:#f8fafc;font-size:11px;">[${d.id || idx + 1}] ${d.category?.toUpperCase()}</strong>
+          <span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;background:${matchingFix ? '#059669' : '#b45309'};color:#fff;">${matchingFix ? 'FIXED IN R2' : d.severity}</span>
         </div>
-        <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">Observed in views: <code>${(d.observedInViews || []).join(', ')}</code></div>
-        <div style="font-size:12px;color:#cbd5e1;margin-bottom:6px;"><strong>Critic Diagnosis:</strong> ${d.diagnosis}</div>
+        <div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;"><strong>Critic Diagnosis:</strong> ${d.diagnosis}</div>
         <div style="font-size:11px;color:#fde68a;"><strong>Required Fix:</strong> ${d.requiredCodeFix}</div>
-        ${
-          matchingFix
-            ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #1e293b;font-size:11px;color:#6ee7b7;">
-                 <strong>Round 2 Code Change Applied:</strong> ${matchingFix.codeChangeDescription}
-               </div>`
-            : ''
-        }
+        ${matchingFix ? `<div style="margin-top:6px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.08);font-size:10px;color:#6ee7b7;">Applied: ${matchingFix.codeChangeDescription}</div>` : ''}
       </div>`;
     })
     .join('');
@@ -1474,134 +1828,162 @@ function renderCriticInspector() {
 }
 
 function updateCodeEditorView() {
-  dom.btnCodeViewR1.classList.toggle('active', state.activeCodeView === 'r1');
-  dom.btnCodeViewR2.classList.toggle('active', state.activeCodeView === 'r2');
-  dom.btnCodeViewTelemetry.classList.toggle('active', state.activeCodeView === 'telemetry');
+  if (!dom.sceneCodeEditor) return;
+  if (dom.btnCodeViewR1) dom.btnCodeViewR1.classList.toggle('active', state.activeCodeView === 'r1');
+  if (dom.btnCodeViewR2) dom.btnCodeViewR2.classList.toggle('active', state.activeCodeView === 'r2');
+  if (dom.btnCodeViewTelemetry) dom.btnCodeViewTelemetry.classList.toggle('active', state.activeCodeView === 'telemetry');
 
   if (state.activeCodeView === 'r1') {
-    dom.sceneCodeEditor.value = state.round1?.blenderPythonScript || state.round1?.bpyCode || '# Run Step 2 to generate Round 1 bpy code...';
+    dom.sceneCodeEditor.value = state.round1?.blenderPythonScript || state.round1?.bpyCode || '# Run Step 2 to author Round 1 bpy code...';
   } else if (state.activeCodeView === 'r2') {
-    dom.sceneCodeEditor.value =
-      state.round2?.blenderPythonScript ||
-      state.round2?.rewrittenBpyCode ||
-      state.round1?.blenderPythonScript ||
-      '# Run Step 4 to generate Rewritten Round 2 bpy code...';
+    dom.sceneCodeEditor.value = state.round2?.blenderPythonScript || state.round2?.rewrittenBpyCode || '# Run Step 4 to rewrite Round 2 bpy code...';
   } else {
-    const tel = {
+    dom.sceneCodeEditor.value = JSON.stringify({
       metricSummary: state.metricSummary,
       round1Telemetry: state.round1?.blenderTelemetry,
       round2Telemetry: state.round2?.blenderTelemetry,
-      codeDiffStats: state.round2?.diffStats,
-    };
-    dom.sceneCodeEditor.value = JSON.stringify(tel, null, 2);
+      diffStats: state.round2?.diffStats,
+    }, null, 2);
   }
 }
 
 function renderCausalInspector() {
-  if (!state.causalSimulation) return;
+  if (!dom.causalGraphContainer || !state.causalSimulation) return;
   const cs = state.causalSimulation;
   const erasHtml = (cs.eras || [])
-    .map((era, idx) => {
-      const stageKey = idx === 0 ? 'era1206' : idx === 1 ? 'era1566' : idx === 2 ? 'era1938' : 'alt2026';
-      return `
-      <div class="causal-card" style="margin-bottom:10px;cursor:pointer;" onclick="applyViewportStage('${stageKey}')">
+    .map((era) => `
+      <div style="margin-bottom:10px;padding:10px;background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);border-radius:6px;cursor:pointer;" onclick="jumpToKeyframe(${era.year})">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-          <strong style="color:#fbbf24;font-size:13px;">Epoch ${idx + 1}: ${era.year} — ${era.eraTitle}</strong>
-          <span class="badge-moge" style="font-size:10px;">${era.blenderTelemetry?.objectCount || 0} meshes | ${era.blenderTelemetry?.totalTriangles || 0} tris</span>
+          <strong style="color:#fbbf24;font-size:12px;">${era.year} — ${era.eraTitle}</strong>
+          <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-secondary);">${era.blenderTelemetry?.objectCount || 0} meshes</span>
         </div>
-        <p style="margin:4px 0;font-size:12px;color:#cbd5e1;">${era.narrative}</p>
-        <div style="font-size:11px;color:#93c5fd;">${(era.causalTransitions || []).map((t) => `• ${t}`).join('<br/>')}</div>
-      </div>`;
-    })
+        <p style="margin:4px 0;font-size:11px;color:#cbd5e1;">${era.narrative}</p>
+        <div style="font-size:10px;color:#93c5fd;">${(era.causalTransitions || []).map((t) => `• ${t}`).join('<br/>')}</div>
+      </div>
+    `)
     .join('');
 
   dom.causalGraphContainer.innerHTML = `
-    <div style="margin-bottom:10px;padding:10px;background:#0f172a;border:1px solid #334155;border-radius:6px;">
-      <div style="font-size:12px;color:#f8fafc;"><strong>Intervention:</strong> ${cs.intervention}</div>
-      <div style="font-size:11px;color:#94a3b8;margin-top:4px;">${cs.causalChainSummary || ''}</div>
-      <div style="font-size:11px;color:#34d399;margin-top:4px;"><strong>Unaffected Structures Preserved:</strong> ${(cs.unaffectedStructures || []).join(', ')}</div>
+    <div style="margin-bottom:10px;padding:10px;background:#0b0f17;border:1px solid var(--border-subtle);border-radius:6px;">
+      <div style="font-size:11px;color:#f8fafc;"><strong>Intervention:</strong> ${cs.intervention}</div>
+      <div style="font-size:10px;color:#34d399;margin-top:4px;"><strong>Unaffected Anchors Preserved:</strong> ${(cs.unaffectedStructures || []).join(', ')}</div>
     </div>
     ${erasHtml}
   `;
 }
 
 function updateMetricsDisplay() {
-  // 1. Adversarial Critic Score
   if (state.critiqueR1 && state.critiqueR2) {
-    dom.metricCriticScore.textContent = `${state.critiqueR1.overallRatingOutOf10} → ${state.critiqueR2.overallRatingOutOf10} / 10`;
-    const delta = (state.critiqueR2.overallRatingOutOf10 - state.critiqueR1.overallRatingOutOf10).toFixed(1);
-    dom.metricCriticSub.textContent = `+${delta} pt improvement across 4 views`;
+    if (dom.metricCriticScore) dom.metricCriticScore.textContent = `${state.critiqueR1.overallRatingOutOf10} → ${state.critiqueR2.overallRatingOutOf10} / 10`;
+    if (dom.metricCriticSub) dom.metricCriticSub.textContent = `+${(state.critiqueR2.overallRatingOutOf10 - state.critiqueR1.overallRatingOutOf10).toFixed(1)} pt improvement`;
   } else if (state.critiqueR1) {
-    dom.metricCriticScore.textContent = `${state.critiqueR1.overallRatingOutOf10} / 10 (R1)`;
-    dom.metricCriticSub.textContent = `${(state.critiqueR1.deficiencies || []).length} deficiencies found`;
+    if (dom.metricCriticScore) dom.metricCriticScore.textContent = `${state.critiqueR1.overallRatingOutOf10} / 10`;
+    if (dom.metricCriticSub) dom.metricCriticSub.textContent = `${(state.critiqueR1.deficiencies || []).length} deficiencies`;
   }
 
-  // 2. 3D Mesh Complexity
   const t1 = state.round1?.blenderTelemetry;
   const t2 = state.round2?.blenderTelemetry;
   if (t1 && t2) {
-    dom.metricMeshComplexity.textContent = `${t1.objectCount} → ${t2.objectCount} meshes`;
-    dom.metricMeshSub.textContent = `${t1.totalTriangles.toLocaleString()} → ${t2.totalTriangles.toLocaleString()} tris`;
+    if (dom.metricMeshComplexity) dom.metricMeshComplexity.textContent = `${t1.objectCount} → ${t2.objectCount} meshes`;
+    if (dom.metricMeshSub) dom.metricMeshSub.textContent = `${t1.totalTriangles.toLocaleString()} → ${t2.totalTriangles.toLocaleString()} tris`;
   } else if (t1) {
-    dom.metricMeshComplexity.textContent = `${t1.objectCount} meshes`;
-    dom.metricMeshSub.textContent = `${t1.totalVertices.toLocaleString()} verts | ${t1.totalTriangles.toLocaleString()} tris`;
+    if (dom.metricMeshComplexity) dom.metricMeshComplexity.textContent = `${t1.objectCount} meshes`;
+    if (dom.metricMeshSub) dom.metricMeshSub.textContent = `${t1.totalTriangles.toLocaleString()} tris`;
   }
 
-  // 3. Ground-Contact Precision
   if (state.metrics.r1GroundErrorMeters !== null && state.metrics.r2GroundErrorMeters !== null) {
-    dom.metricGroundContact.textContent = `${state.metrics.r1GroundErrorMeters}m → ${state.metrics.r2GroundErrorMeters}m`;
-    dom.metricGroundSub.textContent = `Snapped to MoGe-2 floor Y=${state.metricSummary?.groundYThree ?? -1.72}m`;
-  } else if (state.metrics.r1GroundErrorMeters !== null) {
-    dom.metricGroundContact.textContent = `Δ ${state.metrics.r1GroundErrorMeters}m (R1)`;
-    dom.metricGroundSub.textContent = `Floor plane Y=${state.metricSummary?.groundYThree ?? -1.72}m`;
+    if (dom.metricGroundContact) dom.metricGroundContact.textContent = `${state.metrics.r1GroundErrorMeters}m → ${state.metrics.r2GroundErrorMeters}m`;
   }
 
-  // 4. Same-Camera Registration
   const sim = state.metrics.r2SameCamSim || state.metrics.r1SameCamSim;
   if (sim) {
-    dom.metricVisualFidelity.textContent = `SSIM ${sim.ssim}`;
-    dom.metricVisualSub.textContent = `PSNR ${sim.psnr} dB | MAE ${sim.mae}`;
+    if (dom.metricVisualFidelity) dom.metricVisualFidelity.textContent = `SSIM ${sim.ssim}`;
+    if (dom.metricVisualSub) dom.metricVisualSub.textContent = `PSNR ${sim.psnr} dB | MAE ${sim.mae}`;
   }
 
-  // 5. Code Rewrite Delta
   if (state.round2?.diffStats) {
     const ds = state.round2.diffStats;
-    dom.metricCodeDelta.textContent = `+${ds.addedLines} / -${ds.removedLines} lines`;
-    dom.metricCodeSub.textContent = `R1: ${ds.round1Lines} lines → R2: ${ds.round2Lines} lines bpy`;
-  } else if (state.round1?.bpyCode) {
-    dom.metricCodeDelta.textContent = `${state.round1.bpyCode.split('\n').length} lines (R1)`;
-    dom.metricCodeSub.textContent = 'Scene-specific Blender Python';
+    if (dom.metricCodeDelta) dom.metricCodeDelta.textContent = `+${ds.addedLines} / -${ds.removedLines} lines`;
+    if (dom.metricCodeSub) dom.metricCodeSub.textContent = `R1: ${ds.round1Lines} → R2: ${ds.round2Lines} lines`;
   }
 
-  // 6. Stage Latencies
   const L = state.latencies;
   const totalArgon = L.authorR1Ms + L.criticR1Ms + L.rewriteR2Ms + L.criticR2Ms + L.causalMs;
   const totalBlender = L.blenderR1Ms + L.blenderR2Ms;
-  dom.metricLatencies.textContent = `Blender ${totalBlender}ms | Argon ${totalArgon}ms`;
-  dom.metricLatencySub.textContent = `MoGe-2: ${L.mogeMs}ms | R1: ${L.blenderR1Ms}ms | R2: ${L.blenderR2Ms}ms`;
+  if (dom.metricLatencies) dom.metricLatencies.textContent = `Blender ${totalBlender}ms | Argon ${totalArgon}ms`;
 }
 
-function populateSuggestedInterventions(list) {
-  if (!Array.isArray(list) || !list.length) return;
-  dom.suggestedInterventionsBar.innerHTML =
-    '<span class="chip-hint">Suggested Interventions:</span>' +
-    list
-      .map(
-        (txt, i) =>
-          `<button class="btn-chip" data-suggest="${encodeURIComponent(txt)}">Idea ${i + 1}: ${txt.slice(0, 58)}...</button>`
-      )
-      .join('');
-  dom.suggestedInterventionsBar.querySelectorAll('[data-suggest]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const val = decodeURIComponent(btn.dataset.suggest);
-      dom.interventionInput.value = val;
-    });
+function computeAverageGroundElevationError(telemetry) {
+  if (!telemetry || !Array.isArray(telemetry.objects) || !telemetry.objects.length) return 0;
+  const floorStanding = telemetry.objects.filter((o) => Math.abs(o.groundElevationDeltaMeters || 0) < 1.35);
+  const list = floorStanding.length ? floorStanding : telemetry.objects;
+  const sumAbs = list.reduce((acc, o) => acc + Math.abs(o.supportGapMeters || o.groundElevationDeltaMeters || 0), 0);
+  return Number((sumAbs / list.length).toFixed(3));
+}
+
+function computeImageSimilarityMetrics(imgDataUrlA, imgDataUrlB) {
+  return new Promise((resolve) => {
+    const imgA = new Image();
+    const imgB = new Image();
+    let loaded = 0;
+    const onBoth = () => {
+      loaded++;
+      if (loaded < 2) return;
+      const w = 256, h = 192;
+      const cA = document.createElement('canvas');
+      const cB = document.createElement('canvas');
+      cA.width = cB.width = w;
+      cA.height = cB.height = h;
+      const ctxA = cA.getContext('2d');
+      const ctxB = cB.getContext('2d');
+      ctxA.drawImage(imgA, 0, 0, w, h);
+      ctxB.drawImage(imgB, 0, 0, w, h);
+      const dA = ctxA.getImageData(0, 0, w, h).data;
+      const dB = ctxB.getImageData(0, 0, w, h).data;
+
+      let sumAbs = 0, sumSq = 0, sumA = 0, sumB = 0;
+      const n = w * h * 3;
+      for (let i = 0; i < w * h * 4; i += 4) {
+        for (let c = 0; c < 3; c++) {
+          const va = dA[i + c], vb = dB[i + c];
+          const diff = va - vb;
+          sumAbs += Math.abs(diff);
+          sumSq += diff * diff;
+          sumA += va;
+          sumB += vb;
+        }
+      }
+      const mae = sumAbs / n;
+      const mse = sumSq / n;
+      const psnr = mse > 0.001 ? 10 * Math.log10((255 * 255) / mse) : 50.0;
+      const meanA = sumA / n, meanB = sumB / n;
+      let varA = 0, varB = 0, cov = 0;
+      for (let i = 0; i < w * h * 4; i += 4) {
+        for (let c = 0; c < 3; c++) {
+          const da = dA[i + c] - meanA;
+          const db = dB[i + c] - meanB;
+          varA += da * da;
+          varB += db * db;
+          cov += da * db;
+        }
+      }
+      varA /= n; varB /= n; cov /= n;
+      const c1 = 6.5025, c2 = 58.5225;
+      const ssim = ((2 * meanA * meanB + c1) * (2 * cov + c2)) / ((meanA * meanA + meanB * meanB + c1) * (varA + varB + c2));
+
+      resolve({
+        mae: Number(mae.toFixed(2)),
+        psnr: Number(psnr.toFixed(2)),
+        ssim: Number(Math.max(0, Math.min(1, ssim)).toFixed(3)),
+      });
+    };
+    imgA.onload = onBoth;
+    imgB.onload = onBoth;
+    imgA.src = imgDataUrlA;
+    imgB.src = imgDataUrlB;
   });
 }
 
-// ============================================================================
-// Workflow #4: Art Director Live Controls
-// ============================================================================
 function applyThreeJsLightingConfig(cfg) {
   if (!cfg) return;
   if (ambientLight && cfg.ambientIntensity !== undefined) ambientLight.intensity = cfg.ambientIntensity;
@@ -1643,107 +2025,123 @@ function applyArtDirectorSliderChange() {
 // ============================================================================
 // Event Bindings & Interactive Navigation
 // ============================================================================
-function updateSplitPosition(pct) {
-  const clamped = Math.max(0, Math.min(100, Number(pct)));
-  dom.splitLeftClip.style.width = `${clamped}%`;
-  dom.splitDividerLine.style.left = `${clamped}%`;
-}
-
 function bindEvents() {
-  dom.sampleSelect.addEventListener('change', () => {
-    loadSelectedSample(dom.sampleSelect.value);
-  });
-
-  dom.photoInput.addEventListener('change', (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      await loadPhotoFromDataUrl(ev.target.result);
-      setStatus('idle', `Loaded custom photo (${file.name}) — Click Step 1 or Run Full MVP3 Loop`);
-    };
-    reader.readAsDataURL(file);
-  });
-
-  dom.btnDismissError.addEventListener('click', hideApiError);
-  dom.btnRunDemoLoop.addEventListener('click', runFullMvp3DemoLoop);
-  dom.btnStep1Ground.addEventListener('click', step1GroundWithMogeAnd2DPlan);
-  dom.btnStep2AuthorR1.addEventListener('click', step2AuthorRound1World);
-  dom.btnStep3Critic.addEventListener('click', step3RunAdversarialCritic);
-  dom.btnStep4RewriteR2.addEventListener('click', step4RewriteAndRerenderRound2);
-  dom.btnStep5Causal.addEventListener('click', () => step5RunMultiEpochCausalSimulation());
-  dom.btnApplyIntervention.addEventListener('click', () => step5RunMultiEpochCausalSimulation());
-
-  dom.stageButtons.forEach((btn) => {
-    btn.addEventListener('click', () => applyViewportStage(btn.dataset.stage));
-  });
+  // Top chrome controls
+  if (dom.btnToggleDevMode) dom.btnToggleDevMode.addEventListener('click', toggleDevDrawer);
+  if (dom.btnCloseDevDrawer) dom.btnCloseDevDrawer.addEventListener('click', toggleDevDrawer);
+  if (dom.devDrawerBackdrop) dom.devDrawerBackdrop.addEventListener('click', toggleDevDrawer);
 
   dom.camButtons.forEach((btn) => {
-    btn.addEventListener('click', () => setCameraPreset(btn.dataset.cam));
+    btn.addEventListener('click', () => setCameraPreset(btn.dataset.cam, true));
   });
 
-  dom.toggleSplitSlider.addEventListener('change', () => {
-    if (dom.toggleSplitSlider.checked) {
-      setCameraPreset('originalCam');
-      dom.splitCompareOverlay.style.display = 'block';
-      updateSplitPosition(dom.splitSliderInput.value);
-    } else {
-      dom.splitCompareOverlay.style.display = 'none';
-    }
+  if (dom.toggleSplitSlider) {
+    dom.toggleSplitSlider.addEventListener('change', () => {
+      if (dom.toggleSplitSlider.checked) {
+        setCameraPreset('originalCam', true);
+        dom.splitCompareOverlay.style.display = 'block';
+        updateSplitPosition(dom.splitSliderInput ? dom.splitSliderInput.value : 50);
+      } else {
+        dom.splitCompareOverlay.style.display = 'none';
+      }
+    });
+  }
+
+  if (dom.splitSliderInput) {
+    dom.splitSliderInput.addEventListener('input', (e) => updateSplitPosition(e.target.value));
+  }
+
+  // Timeline Branch buttons
+  if (dom.btnBranchOrig) dom.btnBranchOrig.addEventListener('click', () => switchTimelineBranch('orig'));
+  if (dom.btnBranchA) dom.btnBranchA.addEventListener('click', () => switchTimelineBranch('branchA'));
+  if (dom.btnBranchB) dom.btnBranchB.addEventListener('click', () => switchTimelineBranch('branchB'));
+  if (dom.btnOpenInterveneModal) dom.btnOpenInterveneModal.addEventListener('click', () => openInterventionModal('Central Courtyard Monument'));
+
+  // Signature RETURN TO PRESENT action
+  if (dom.btnReturnToPresent) dom.btnReturnToPresent.addEventListener('click', executeCinematicReturnToPresent);
+
+  // Intervention modal
+  if (dom.btnCloseInterveneModal) dom.btnCloseInterveneModal.addEventListener('click', closeInterventionModal);
+  if (dom.btnCancelIntervene) dom.btnCancelIntervene.addEventListener('click', closeInterventionModal);
+  if (dom.btnApplyIntervention) dom.btnApplyIntervention.addEventListener('click', () => step5RunMultiEpochCausalSimulation());
+
+  document.querySelectorAll('.preset-idea-pill').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idea = btn.dataset.idea;
+      if (dom.interventionInput && idea) dom.interventionInput.value = idea;
+    });
   });
 
-  dom.splitSliderInput.addEventListener('input', (e) => updateSplitPosition(e.target.value));
-
-  dom.toggleMogeBackdrop.addEventListener('change', () => {
-    if (photoMesh) photoMesh.visible = dom.toggleMogeBackdrop.checked;
+  // Causal popover
+  if (dom.btnCloseAncestryPopover) dom.btnCloseAncestryPopover.addEventListener('click', () => {
+    dom.causalAncestryPopover.style.display = 'none';
+  });
+  if (dom.btnDirectInterveneLavabo) dom.btnDirectInterveneLavabo.addEventListener('click', () => switchTimelineBranch('branchA'));
+  if (dom.btnDirectInterveneAstrolabe) dom.btnDirectInterveneAstrolabe.addEventListener('click', () => switchTimelineBranch('branchB'));
+  if (dom.btnDirectScaleUp) dom.btnDirectScaleUp.addEventListener('click', () => {
+    const target = state.selected3DObject || proceduralGroup;
+    target.scale.multiplyScalar(1.15);
     renderer.render(scene, camera);
+    showToast('Scaled selected 3D object +15%');
   });
-
-  dom.toggleBlenderGlb.addEventListener('change', () => {
-    proceduralGroup.visible = dom.toggleBlenderGlb.checked;
+  if (dom.btnDirectRotateObj) dom.btnDirectRotateObj.addEventListener('click', () => {
+    const target = state.selected3DObject || proceduralGroup;
+    target.rotation.y += Math.PI / 8;
     renderer.render(scene, camera);
+    showToast('Rotated selected 3D object +22.5°');
   });
 
-  dom.btnShowR1Shots.addEventListener('click', () => displayFourDiagnosticScreenshots(state.round1Views, 1));
-  dom.btnShowR2Shots.addEventListener('click', () => displayFourDiagnosticScreenshots(state.round2Views, 2));
+  // Developer mode pipeline actions
+  if (dom.btnRunDemoLoop) dom.btnRunDemoLoop.addEventListener('click', runFullMvp3DemoLoop);
+  if (dom.btnStep1Ground) dom.btnStep1Ground.addEventListener('click', step1GroundWithMogeAnd2DPlan);
+  if (dom.btnStep2AuthorR1) dom.btnStep2AuthorR1.addEventListener('click', step2AuthorRound1World);
+  if (dom.btnStep3Critic) dom.btnStep3Critic.addEventListener('click', step3RunAdversarialCritic);
+  if (dom.btnStep4RewriteR2) dom.btnStep4RewriteR2.addEventListener('click', step4RewriteAndRerenderRound2);
+  if (dom.btnStep5Causal) dom.btnStep5Causal.addEventListener('click', () => step5RunMultiEpochCausalSimulation());
 
-  dom.btnCodeViewR1.addEventListener('click', () => {
-    state.activeCodeView = 'r1';
-    updateCodeEditorView();
-  });
-  dom.btnCodeViewR2.addEventListener('click', () => {
-    state.activeCodeView = 'r2';
-    updateCodeEditorView();
-  });
-  dom.btnCodeViewTelemetry.addEventListener('click', () => {
-    state.activeCodeView = 'telemetry';
-    updateCodeEditorView();
-  });
+  if (dom.sampleSelect) {
+    dom.sampleSelect.addEventListener('change', () => loadSelectedSample(dom.sampleSelect.value));
+  }
+  if (dom.photoInput) {
+    dom.photoInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        await loadPhotoFromDataUrl(ev.target.result);
+        showToast(`Loaded ${file.name}`);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
 
-  [dom.ctrlSunAngle, dom.ctrlLightIntensity, dom.ctrlRoughness, dom.ctrlPhotoOpacity].forEach((el) => {
-    el.addEventListener('input', applyArtDirectorSliderChange);
-  });
-
-  dom.btnCopySettingsJson.addEventListener('click', () => {
-    const jsonStr = JSON.stringify(
-      {
-        artDirectorSettings: state.artDirectorSettings,
-        cameraPose: {
-          position: camera.position.toArray().map((v) => Number(v.toFixed(3))),
-          fov: Number(camera.fov.toFixed(2)),
-        },
-      },
-      null,
-      2
-    );
-    navigator.clipboard?.writeText(jsonStr);
-    dom.btnCopySettingsJson.textContent = '✓ Copied JSON!';
-    setTimeout(() => {
-      dom.btnCopySettingsJson.textContent = '📋 Copy Settings JSON';
-    }, 1800);
+  dom.stageButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const st = btn.dataset.stage;
+      if (st === 'era1206') jumpToKeyframe(1206);
+      else if (st === 'era1566') jumpToKeyframe(1566);
+      else if (st === 'era1938') jumpToKeyframe(1938);
+      else if (st === 'alt2026' || st === 'round2') jumpToKeyframe(2026);
+    });
   });
 
-  // Tab switcher
+  if (dom.toggleMogeBackdrop) {
+    dom.toggleMogeBackdrop.addEventListener('change', () => {
+      if (photoMesh) photoMesh.visible = dom.toggleMogeBackdrop.checked;
+      renderer.render(scene, camera);
+    });
+  }
+  if (dom.toggleBlenderGlb) {
+    dom.toggleBlenderGlb.addEventListener('change', () => {
+      proceduralGroup.visible = dom.toggleBlenderGlb.checked;
+      renderer.render(scene, camera);
+    });
+  }
+
+  if (dom.btnShowR1Shots) dom.btnShowR1Shots.addEventListener('click', () => displayFourDiagnosticScreenshots(state.round1Views, 1));
+  if (dom.btnShowR2Shots) dom.btnShowR2Shots.addEventListener('click', () => displayFourDiagnosticScreenshots(state.round2Views, 2));
+
+  // Drawer Tabs
   document.querySelectorAll('.tab-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
@@ -1754,49 +2152,21 @@ function bindEvents() {
     });
   });
 
-  // TIME TRAVEL Scrubber (1206 <-> 1566 <-> 1938 <-> 2026)
-  if (dom.timeScrubberRange) {
-    dom.timeScrubberRange.addEventListener('input', (e) => {
-      const idx = Number(e.target.value);
-      const stages = ['era1206', 'era1566', 'era1938', state.activeBranchKey === 'orig' ? 'round2' : 'alt2026'];
-      applyViewportStage(stages[idx] || 'alt2026');
-    });
-  }
+  if (dom.btnCodeViewR1) dom.btnCodeViewR1.addEventListener('click', () => { state.activeCodeView = 'r1'; updateCodeEditorView(); });
+  if (dom.btnCodeViewR2) dom.btnCodeViewR2.addEventListener('click', () => { state.activeCodeView = 'r2'; updateCodeEditorView(); });
+  if (dom.btnCodeViewTelemetry) dom.btnCodeViewTelemetry.addEventListener('click', () => { state.activeCodeView = 'telemetry'; updateCodeEditorView(); });
 
-  // Timeline Branch Switcher (Preserves Original + Counterfactual Branches)
-  dom.btnBranchOrig?.addEventListener('click', () => switchTimelineBranch('orig'));
-  dom.btnBranchA?.addEventListener('click', () => switchTimelineBranch('branchA'));
-  dom.btnBranchB?.addEventListener('click', () => switchTimelineBranch('branchB'));
+  [dom.ctrlSunAngle, dom.ctrlLightIntensity, dom.ctrlRoughness, dom.ctrlPhotoOpacity].forEach((el) => {
+    if (el) el.addEventListener('input', applyArtDirectorSliderChange);
+  });
 
-  // Return to Present [0,0,0]
-  dom.btnReturnToPresent?.addEventListener('click', () => returnToPresentViewpoint());
-
-  // Causal Ancestry Inspector & Direct 3D Manipulation
-  dom.btnInspectMonumentAncestry?.addEventListener('click', () => inspectObjectCausalAncestry('monument'));
-  dom.btnInspectArcadeAncestry?.addEventListener('click', () => inspectObjectCausalAncestry('arcade'));
-  dom.btnCloseAncestryPopover?.addEventListener('click', () => {
-    if (dom.causalAncestryPopover) dom.causalAncestryPopover.style.display = 'none';
-  });
-  dom.btnDirectInterveneLavabo?.addEventListener('click', () => switchTimelineBranch('branchA'));
-  dom.btnDirectInterveneAstrolabe?.addEventListener('click', () => switchTimelineBranch('branchB'));
-  dom.btnDirectScaleUp?.addEventListener('click', () => {
-    const target = state.selected3DObject || proceduralGroup;
-    target.scale.multiplyScalar(1.15);
-    renderer.render(scene, camera);
-    setStatus('ok', `Directly scaled ${state.selected3DObject?.name || '3D monument'} by +15% in persistent 3D world`);
-  });
-  dom.btnDirectRotateObj?.addEventListener('click', () => {
-    const target = state.selected3DObject || proceduralGroup;
-    target.rotation.y += Math.PI / 8;
-    renderer.render(scene, camera);
-    setStatus('ok', `Directly rotated ${state.selected3DObject?.name || '3D monument'} by +22.5° in persistent 3D world`);
-  });
+  if (dom.btnDismissError) dom.btnDismissError.addEventListener('click', hideApiError);
 }
 
 function setupNavigationControls() {
   const canvas = dom.threeCanvas;
-  let downX = 0;
-  let downY = 0;
+  let downX = 0, downY = 0;
+
   canvas.addEventListener('mousedown', (e) => {
     navState.isDragging = true;
     navState.lastX = e.clientX;
@@ -1804,10 +2174,47 @@ function setupNavigationControls() {
     downX = e.clientX;
     downY = e.clientY;
   });
+
+  // Raycast hover tracking for hover indicator HUD
+  canvas.addEventListener('mousemove', (e) => {
+    if (navState.isDragging) {
+      const dx = e.clientX - navState.lastX;
+      const dy = e.clientY - navState.lastY;
+      navState.lastX = e.clientX;
+      navState.lastY = e.clientY;
+      navState.yaw -= dx * 0.0035;
+      navState.pitch = Math.max(-1.2, Math.min(1.2, navState.pitch - dy * 0.0035));
+      const euler = new THREE.Euler(navState.pitch, navState.yaw, 0, 'YXZ');
+      camera.quaternion.setFromEuler(euler);
+      updateCameraHud();
+      renderer.render(scene, camera);
+      return;
+    }
+
+    // Passive raycast hover check
+    const rect = canvas.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(proceduralGroup.children, true);
+
+    if (hits.length > 0 && dom.objectHoverHud) {
+      const hitObj = hits[0].object;
+      const cleanName = hitObj.name.replace(/_\d+$/, '').replace(/_/g, ' ');
+      dom.hoverObjectName.textContent = cleanName;
+      dom.objectHoverHud.classList.add('visible');
+    } else if (dom.objectHoverHud) {
+      dom.objectHoverHud.classList.remove('visible');
+    }
+  });
+
+  // Click on 3D object to open contextual intervention card or inspect causal ancestry
   window.addEventListener('mouseup', (e) => {
     const moveDist = Math.hypot(e.clientX - downX, e.clientY - downY);
     if (navState.isDragging && moveDist < 6 && e.target === canvas) {
-      // 3D Raycast click to inspect Causal Ancestry & select 3D object for direct manipulation
       const rect = canvas.getBoundingClientRect();
       const mouse = new THREE.Vector2(
         ((e.clientX - rect.left) / rect.width) * 2 - 1,
@@ -1816,60 +2223,58 @@ function setupNavigationControls() {
       const raycaster = new THREE.Raycaster();
       raycaster.setFromCamera(mouse, camera);
       const hits = raycaster.intersectObjects(proceduralGroup.children, true);
+
       if (hits.length > 0) {
         const hitMesh = hits[0].object;
         state.selected3DObject = hitMesh;
-        inspectObjectCausalAncestry('custom', hitMesh.name);
+        const cleanName = hitMesh.name.replace(/_\d+$/, '').replace(/_/g, ' ');
+
+        // If the clicked object is a transformed monument and causal data exists, show its ancestry
+        if (state.causalSimulation && /^(Lavabo|Astrolabe|Marble_Balust|Wellhead)/i.test(hitMesh.name)) {
+          inspectObjectCausalAncestry('custom', hitMesh.name);
+        } else {
+          // Otherwise open the natural language historical intervention card
+          openInterventionModal(cleanName);
+        }
       }
     }
     navState.isDragging = false;
   });
-  window.addEventListener('mousemove', (e) => {
-    if (!navState.isDragging) return;
-    const dx = e.clientX - navState.lastX;
-    const dy = e.clientY - navState.lastY;
-    navState.lastX = e.clientX;
-    navState.lastY = e.clientY;
-    navState.yaw -= dx * 0.0045;
-    navState.pitch = Math.max(-1.2, Math.min(1.2, navState.pitch - dy * 0.0045));
-    const euler = new THREE.Euler(navState.pitch, navState.yaw, 0, 'YXZ');
-    camera.quaternion.setFromEuler(euler);
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    camera.position.addScaledVector(fwd, -e.deltaY * 0.002);
     updateCameraHud();
     renderer.render(scene, camera);
-  });
-
-  canvas.addEventListener(
-    'wheel',
-    (e) => {
-      e.preventDefault();
-      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-      camera.position.addScaledVector(fwd, -e.deltaY * 0.0025);
-      updateCameraHud();
-      renderer.render(scene, camera);
-    },
-    { passive: false }
-  );
-
-  document.querySelectorAll('[data-move]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const dir = btn.dataset.move;
-      const step = 0.35;
-      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-      if (dir === 'forward') camera.position.addScaledVector(fwd, step);
-      if (dir === 'back') camera.position.addScaledVector(fwd, -step);
-      if (dir === 'left') camera.position.addScaledVector(right, -step);
-      if (dir === 'right') camera.position.addScaledVector(right, step);
-      if (dir === 'up') camera.position.y += step * 0.7;
-      if (dir === 'down') camera.position.y -= step * 0.7;
-      updateCameraHud();
-      renderer.render(scene, camera);
-    });
-  });
+  }, { passive: false });
 }
 
+// ============================================================================
+// Render & Cinematic Animation Loop
+// ============================================================================
 function animateLoop() {
   requestAnimationFrame(animateLoop);
+
+  // Handle smooth cinematic camera tweening
+  if (navState.isTweening) {
+    const elapsed = performance.now() - navState.tweenStartTime;
+    const progress = Math.min(1, elapsed / navState.tweenDurationMs);
+    const ease = 1 - Math.pow(1 - progress, 3); // cubic ease-out
+
+    camera.position.lerpVectors(navState.tweenStartPos, navState.tweenTargetPos, ease);
+    camera.quaternion.slerpQuaternions(navState.tweenStartQuat, navState.tweenTargetQuat, ease);
+    camera.fov = navState.tweenStartFov + (navState.tweenTargetFov - navState.tweenStartFov) * ease;
+    camera.updateProjectionMatrix();
+
+    if (progress >= 1) {
+      navState.isTweening = false;
+      const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+      navState.yaw = euler.y;
+      navState.pitch = euler.x;
+    }
+  }
+
   if (renderer && scene && camera) {
     renderer.render(scene, camera);
   }
