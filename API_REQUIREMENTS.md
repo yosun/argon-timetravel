@@ -1,17 +1,17 @@
 # External services for TIME TRAVEL
 
-The application and history UI run in Codex Cloud. The live pipeline uses **AI3D MoGe-2 for depth, Vertex/Gemini for authoring and critique, and cloud CPU Blender for geometry generation and GLB export**. No Mac process, external Blender worker, or local GPU is part of this architecture.
+The application and history UI run in Codex Cloud. The live pipeline uses **AI3D MoGe-2 for depth, Gemini Developer API for authoring and critique, and cloud CPU Blender for geometry generation and GLB export**. No Mac process, external Blender worker, or local GPU is part of this architecture.
 
 The three-minute procedural demonstration executes real CPU Blender without external inference. It is separate from reconstructing an uploaded photograph.
 
 ## Upload and explicit reconstruction
 
-The public flow is **Upload image → preview → Reconstruct image**. File selection prepares the preview only; no paid AI3D or Vertex request should run until the user presses **Reconstruct image**. Reconstruction then performs:
+The public flow is **Upload image → preview → Reconstruct image**. File selection prepares the preview only; no paid AI3D or Gemini request should run until the user presses **Reconstruct image**. Reconstruction then performs:
 
 1. AI3D MoGe-2 metric depth and camera/point calibration.
-2. Vertex/Gemini scene-specific Blender source authoring.
+2. Gemini Developer API scene-specific Blender source authoring.
 3. Cloud CPU Blender geometry generation, telemetry, and validated GLB export.
-4. Actual rendered-view capture, Vertex/Gemini independent critique, and source repair/re-export.
+4. Actual rendered-view capture, Gemini Developer API independent critique, and source repair/re-export.
 
 Existing histories remain available when a new image is selected. A reconstruction retains its own photograph and metric context. If a prerequisite is missing, the UI should name the blocked service and the missing credential/access requirement rather than claiming success or substituting the procedural demo.
 
@@ -40,15 +40,31 @@ node scripts/smoke-live-depth.js
 
 This submits the committed cloister photograph through the real application endpoint and prints the outcome, timing, grid/intrinsic checks, and whether a mesh was returned. A pass verifies authenticated inference and usable geometry; health alone does not. The job may consume normal AI3D usage. No API key is printed.
 
-## Vertex/Gemini authoring and independent critique
+## Direct Gemini authoring and independent critique
 
-These are external API operations and need no GPU on the Codex host. The adapter uses Vertex with the configured model ID `gemini-4-argon` through `gcloud auth print-access-token`. Configure an authenticated cloud identity, `GOOGLE_CLOUD_PROJECT` (or a gcloud project configuration), and permission to invoke that exact model. Confirm that the model exists and is available to the identity before claiming readiness.
+The default live authoring/critic provider is the **Gemini Developer API** at `generativelanguage.googleapis.com`. These are external API operations and need no GPU on the Codex host. A gcloud installation, Vertex identity, and Google Cloud project are not prerequisites for this route.
 
-The project is now configured, but the recorded cloud check found no usable Vertex identity; the available ADC binding is unusable and gcloud is absent. This is a credentials/access blocker, not a GPU limitation. The current adapter does not automatically use `GEMINI_API_KEY` or a service-account file path. Merely setting those variables does not activate the integration.
+In cloud environment settings, supply `GEMINI_API_KEY` securely and allow its HTTPS destination `generativelanguage.googleapis.com`. Never print the key or put it in chat, URLs, commits, or documents. Set `GEMINI_MODEL` to the model selected for authoring and critique. The repository's historical `gemini-4-argon` label is **not verified as an available Gemini Developer API model**; preserving that string in configuration does not establish access.
 
-Authoring consumes reference images, metric landmarks/intrinsics, and, when relevant, parent Blender source, intervention/fork date, and prior critique. It returns complete Blender Python source as structured JSON. The critic consumes actual rendered viewpoints and reports explicit scores and deficiencies. Those model calls must complete before any claim of independently assessed reconstruction quality.
+After the key binding is active, query ListModels with the actual configured key, then select a returned model that supports `generateContent`:
 
-AI3D remains the depth provider. Vertex/Gemini remains the scene author and critic.
+```sh
+node scripts/check-gemini.js
+```
+
+The default check lists model metadata only; it does not run paid content generation or print the API key. Set `GEMINI_MODEL` in environment settings to a returned identifier and restart the app if required for configuration loading. No model is silently substituted for the configured value. To explicitly request the minimal JSON generation smoke and validate that model access, run:
+
+```sh
+node scripts/check-gemini.js --generate
+```
+
+The latter is an explicit API generation request and may consume normal Gemini usage. Neither key presence nor ListModels alone establishes source quality or critic success. Verify a real authoring/critic request before claiming the entire live workflow is ready.
+
+Status metadata identifies `authoringProvider:'gemini'`, the configured model, and model verification separately. A configured key does not imply `modelVerified`. Missing credentials, unavailable models, rate limits, and API errors must be surfaced for this one active provider; there is no provider selector or automatic fallback. The normal app started by `npm start`, including its preserved MVP1/MVP2 pages, uses this direct Gemini adapter. The archived standalone `mvp2_server.js` is not the normal startup path.
+
+The recorded runtime does not yet have `GEMINI_API_KEY`; direct Gemini model discovery, source generation, and independent critique remain unverified. This is a credentials/model-access prerequisite, not a GPU limitation.
+
+Authoring consumes reference images, metric landmarks/intrinsics, and, when relevant, parent Blender source, intervention/fork date, and prior critique. It returns complete Blender Python source as structured JSON. The critic consumes actual rendered viewpoints and reports explicit scores and deficiencies. Those model calls must complete before any claim of independently assessed reconstruction quality. AI3D remains the depth provider.
 
 ## CPU Blender execution
 
@@ -58,4 +74,4 @@ CPU compilation/export and error handling have been exercised with real Blender.
 
 ## Evidence boundary
 
-The three-minute procedural CPU demo has recorded real generation and browser verification. Authenticated AI3D depth inference is now verified: the first uncached job took 29.7 seconds, and the live browser displayed the actual metric-depth mesh. Architectural source generation and critique remain blocked by Vertex authentication/model access. No authenticated live inference or critic score is established by mocked tests or illustrative assets. The smallest external GPU boundary is the existing AI3D single-image MoGe-2 job; moving the application or Blender to a GPU host is unnecessary.
+The three-minute procedural CPU demo has recorded real generation and browser verification. Authenticated AI3D depth inference is now verified: the first uncached job took 29.7 seconds, and the live browser displayed the actual metric-depth mesh. Architectural source generation and critique remain blocked by the absent Gemini API key and unverified model access. Mocked tests and illustrative assets establish neither authenticated inference nor critic scores; the separately recorded real AI3D run establishes depth inference only. The smallest external GPU boundary is the existing AI3D single-image MoGe-2 job; moving the application or Blender to a GPU host is unnecessary.

@@ -5,11 +5,11 @@ TIME TRAVEL turns a photograph into a navigable 3D world, then preserves alterna
 | Component | Responsibility |
 | --- | --- |
 | AI3D MoGe-2 API | Photograph-to-metric-depth, points, camera calibration, and geometry artifacts |
-| Vertex AI / Gemini | Scene-specific Blender source authoring, independent rendered-view critique, source repair, and causal scene planning |
+| Gemini Developer API | Scene-specific Blender source authoring, independent rendered-view critique, source repair, and causal scene planning |
 | Cloud CPU Blender | Execute authored geometry, measure telemetry, and export validated GLB worlds |
 | Node.js and Three.js | Orchestrate services, retain history relationships, and navigate the worlds |
 
-No Mac process or local GPU is required. AI3D supplies MoGe-2 inference; it does not replace Vertex authoring or critique. Blender runs in the cloud on CPU.
+No Mac process or local GPU is required. AI3D supplies MoGe-2 inference. The direct Gemini Developer API is the active authoring/critic provider; gcloud and a Google Cloud project are not prerequisites. Blender runs in the cloud on CPU. Provider/model metadata must name the single selected provider, and credential or API errors do not trigger automatic provider fallback.
 
 ## Cloud startup
 
@@ -29,19 +29,19 @@ The servers use ports 3456 and 3457 inside the cloud environment. Use the platfo
 
 ## Three-minute demonstration
 
-Click **3-minute demo** to generate a 1206 fountain canopy and a nested 1566 astrolabe history. This runs real CPU Blender geometry generation and GLB export using curated procedural rules. It does not call AI3D or Vertex, and it is labeled as a procedural demonstration rather than an AI reconstruction.
+Click **3-minute demo** to generate a 1206 fountain canopy and a nested 1566 astrolabe history. This runs real CPU Blender geometry generation and GLB export using curated procedural rules. It does not call AI3D or Gemini, and it is labeled as a procedural demonstration rather than an AI reconstruction.
 
 Scrub the timeline and select saved histories to compare parent and descendant worlds. Each intervention retains a unique history ID, its parent ID, and its exact fork date. Earlier states and sibling histories remain intact.
 
 ## Reconstruct an uploaded photograph
 
 1. Use **Upload image** in the top toolbar and select a photograph. Selection creates a preview; it does not automatically submit paid inference requests.
-2. Press **Reconstruct image** to start the live pipeline: AI3D MoGe-2 depth, Vertex/Gemini Blender authoring, CPU Blender export, rendered-view critique, and source repair.
+2. Press **Reconstruct image** to start the live pipeline: AI3D MoGe-2 depth, Gemini Developer API Blender authoring, CPU Blender export, rendered-view critique, and source repair.
 3. Inspect the resulting world and its reported critic outcomes, then create a causal intervention from a selected history and date.
 
 Uploading another image retains existing histories. Each reconstruction stores its own source photograph and metric context so later interventions use the correct reference. Missing credentials or service access must be reported for the affected service; an illustrative world must not be presented as successful live reconstruction.
 
-Live reconstruction requires a secure `AI3D_API_KEY` binding, access to `api.ai3d.dev` and returned artifact hosts, and an authenticated Vertex identity/project authorized for the configured Gemini model. See [API_REQUIREMENTS.md](API_REQUIREMENTS.md). Do not put secret values in chat, source files, or commits.
+Live reconstruction requires a secure `AI3D_API_KEY` binding, access to `api.ai3d.dev` and returned artifact hosts, and a secure `GEMINI_API_KEY` binding for `generativelanguage.googleapis.com`. Set `GEMINI_MODEL` to a model available to that key after checking ListModels; the repository's historical `gemini-4-argon` label is not verified on the Developer API. See [API_REQUIREMENTS.md](API_REQUIREMENTS.md). Do not put secret values in chat, source files, or commits.
 
 ## Verification and limits
 
@@ -49,7 +49,7 @@ Live reconstruction requires a secure `AI3D_API_KEY` binding, access to `api.ai3
 npm test
 ```
 
-The recorded cloud checks include real CPU Blender generation/export, browser navigation, nested procedural histories, reload persistence, and failed-load handling. Tests that seed model responses exercise orchestration only; they do not verify model quality. Live AI3D inference and Vertex authoring/critique remain separate checks and require working credentials and network access. Historical handoff critic scores have not been independently reproduced in this cloud host.
+The recorded cloud checks include real CPU Blender generation/export, browser navigation, nested procedural histories, reload persistence, and failed-load handling. Tests that seed model responses exercise orchestration only; they do not verify model quality. Live AI3D inference and Gemini authoring/critique remain separate checks and require working credentials and network access. Historical handoff critic scores have not been independently reproduced in this cloud host.
 
 [HARDWARE.md](HARDWARE.md) records the absence of an exposed GPU, the limits of Codex Cloud GPU-support verification, and the local CPU kernel investigation. The CPU investigation used untrained weights and is not a reconstruction result. MoGe-2 remains on AI3D.
 

@@ -1,15 +1,16 @@
 const http = require('http');
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { validateBlenderResult } = require('./blender-result');
 const { planFork } = require('./demo-worlds');
+const gemini = require('./gemini-client');
+const { inlineImage, responseCacheKey } = require('./gemini-inputs');
 const { execSync, exec } = require('child_process');
 
 const PORT = process.env.PORT || 3456;
 const DEPTH_SERVICE_PORT = Number(process.env.DEPTH_SERVICE_PORT || 3457);
-const MODEL_ID = 'gemini-4-argon';
+const MODEL_ID = gemini.getConfig().model;
 const CACHE_DIR = path.join(__dirname, '.cache');
 const SAMPLES_DIR = path.join(__dirname, 'samples');
 const PROGRESS_JSON = path.join(CACHE_DIR, 'mvp3_progress_milestones.json');
@@ -128,28 +129,8 @@ function runBlenderLegacyToolchain(specObj, prefix = 'blender') {
   };
 }
 
-let cachedToken = null;
-let cachedTokenTime = 0;
-let cachedProject = null;
-
-function getGcloudAuth() {
-  const now = Date.now();
-  if (!cachedProject) {
-    cachedProject = (
-      process.env.GOOGLE_CLOUD_PROJECT ||
-      execSync('gcloud config get-value project', { encoding: 'utf8' })
-    ).trim();
-  }
-  if (!cachedToken || now - cachedTokenTime > 40 * 60 * 1000) {
-    cachedToken = execSync('gcloud auth print-access-token', { encoding: 'utf8' }).trim();
-    cachedTokenTime = now;
-  }
-  return { token: cachedToken, project: cachedProject };
-}
-
 function getCacheKey(prefix, obj) {
-  const hash = crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex').slice(0, 24);
-  return path.join(CACHE_DIR, `${prefix}_${hash}.json`);
+  return path.join(CACHE_DIR, responseCacheKey(prefix, obj, MODEL_ID));
 }
 
 function readCache(cacheFile) {
@@ -206,160 +187,15 @@ function callDepthService(payload) {
   });
 }
 
-function normalizeUsage(u = {}) {
-  return {
-    promptTokens: u.promptTokenCount || 0,
-    thoughtsTokens: u.thoughtsTokenCount || 0,
-    outputTokens: u.candidatesTokenCount || 0,
-    totalTokens: u.totalTokenCount || 0,
-  };
-}
-
-function callGemini4Argon({ parts, systemInstruction, thinkingLevel = 'MEDIUM', temperature = 0.2 }) {
-  return new Promise((resolve, reject) => {
-    const startTime = Date.now();
-    let auth;
-    try {
-      auth = getGcloudAuth();
-    } catch (err) {
-      return reject({
-        status: 500,
-        exactApiError: {
-          source: 'gcloud_cli_auth',
-          message: err.message,
-        },
-      });
-    }
-
-    const endpointUrl = `https://aiplatform.googleapis.com/v1/projects/${auth.project}/locations/global/publishers/google/models/${MODEL_ID}:generateContent`;
-
-    const payload = {
-      contents: [{ role: 'user', parts }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature,
-        thinkingConfig: {
-          thinkingLevel: thinkingLevel || 'MEDIUM',
-        },
-      },
-    };
-
-    if (systemInstruction) {
-      payload.systemInstruction = {
-        parts: [{ text: systemInstruction }],
-      };
-    }
-
-    const bodyBuffer = Buffer.from(JSON.stringify(payload), 'utf8');
-    const urlObj = new URL(endpointUrl);
-
-    const req = https.request(
-      {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname + urlObj.search,
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${auth.token}`,
-          'Content-Type': 'application/json',
-          'Content-Length': bodyBuffer.length,
-        },
-      },
-      (res) => {
-        const chunks = [];
-        res.on('data', (d) => chunks.push(d));
-        res.on('end', () => {
-          const latencyMs = Date.now() - startTime;
-          const rawText = Buffer.concat(chunks).toString('utf8');
-          let parsed;
-          try {
-            parsed = JSON.parse(rawText);
-          } catch (_) {
-            return reject({
-              status: res.statusCode || 502,
-              latencyMs,
-              endpointUrl,
-              exactApiError: {
-                message: 'Non-JSON response from Vertex AI endpoint',
-                rawResponse: rawText.slice(0, 1500),
-              },
-            });
-          }
-
-          if (res.statusCode < 200 || res.statusCode >= 300 || parsed.error) {
-            if (res.statusCode === 401) cachedToken = null;
-            return reject({
-              status: res.statusCode || 500,
-              latencyMs,
-              endpointUrl,
-              exactApiError: parsed.error || parsed,
-            });
-          }
-
-          const candidate = parsed.candidates && parsed.candidates[0];
-          const textPart =
-            candidate &&
-            candidate.content &&
-            candidate.content.parts &&
-            candidate.content.parts.find((p) => typeof p.text === 'string');
-
-          if (!textPart) {
-            return reject({
-              status: 500,
-              latencyMs,
-              endpointUrl,
-              exactApiError: {
-                message: 'No text part returned by gemini-4-argon',
-                rawResponse: parsed,
-              },
-            });
-          }
-
-          let jsonResult;
-          try {
-            const cleaned = textPart.text
-              .replace(/^```json\s*/i, '')
-              .replace(/^```\s*/i, '')
-              .replace(/\s*```$/, '')
-              .trim();
-            jsonResult = JSON.parse(cleaned);
-          } catch (parseErr) {
-            return reject({
-              status: 500,
-              latencyMs,
-              endpointUrl,
-              exactApiError: {
-                message: `Failed to parse JSON output from ${MODEL_ID}: ${parseErr.message}`,
-                modelOutputPreview: textPart.text.slice(0, 1500),
-              },
-            });
-          }
-
-          resolve({
-            data: jsonResult,
-            latencyMs,
-            usage: normalizeUsage(parsed.usageMetadata),
-            modelVersion: parsed.modelVersion || MODEL_ID,
-          });
-        });
-      }
-    );
-
-    req.on('error', (err) => {
-      reject({
-        status: 502,
-        latencyMs: Date.now() - startTime,
-        endpointUrl,
-        exactApiError: { message: err.message },
-      });
-    });
-
-    req.write(bodyBuffer);
-    req.end();
-  });
+let verifiedGeminiModel = null;
+async function callGemini4Argon(options) {
+  const result = await gemini.generateJSON(options);
+  verifiedGeminiModel = MODEL_ID;
+  return result;
 }
 
 const MVP3_SYSTEM_INSTRUCTION = `
-You are Gemini 4 Argon (gemini-4-argon), operating under Google's Official 6-Workflow 3D Guide for MVP3: Autonomous 3D World Generation, Adversarial 4-View Critique, Closed-Loop Code Rewrite, and Multi-Decade Causal Simulation.
+You are ${MODEL_ID}, following the application's MVP3 workflow: Autonomous 3D World Generation, Adversarial 4-View Critique, Closed-Loop Code Rewrite, and Multi-Decade Causal Simulation.
 
 CRITICAL PRINCIPLES:
 1. UNRESTRICTED SCENE-SPECIFIC 3D AUTHORING: Write real, scene-specific Blender Python (\`bpy\`) code tailored to the exact input photograph and its MoGe-2 metric 3D point cloud. Never rely on living-room templates when looking at a courtyard, street, or architectural scene.
@@ -606,7 +442,7 @@ Return ONLY valid JSON matching this schema:
       temperature: 0.25,
       parts: [
         { text: 'ORIGINAL PHOTOGRAPH:' },
-        { inlineData: { mimeType: 'image/jpeg', data: origPhoto } },
+        inlineImage(body.originalImageDataUrl),
         { text: causalPrompt },
       ],
     });
@@ -670,28 +506,22 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/status') {
-    try {
-      let auth = null;
-      try { auth = getGcloudAuth(); } catch (_) {}
-      return sendJson(res, 200, {
-        ok: true,
-        milestone: 'MVP3: Autonomous 3D World Authoring, 4-View Adversarial Critic & Closed-Loop Code Rewrite',
-        model: MODEL_ID,
-        project: auth?.project || null,
-        liveGenerationAvailable: Boolean(auth),
-        proceduralDemoAvailable: true,
-        proceduralDemoBackend: 'CPU Blender; no AI inference',
-        geometryBackend: 'MoGe-2 (microsoft/MoGe via api.ai3d.dev/v2)',
-        authoringBackend: 'Unrestricted Scene-Specific Headless Blender 4.1 (bpy -> GLB) + Nano Banana PBR',
-        endpoint: `https://aiplatform.googleapis.com/v1/projects/${auth?.project || "unconfigured"}/locations/global/publishers/google/models/${MODEL_ID}:generateContent`,
-      });
-    } catch (err) {
-      return sendJson(res, 500, {
-        ok: false,
-        model: MODEL_ID,
-        exactApiError: { message: err.message },
-      });
-    }
+    const config = gemini.getConfig();
+    const readiness = gemini.readiness();
+    return sendJson(res, 200, {
+      ok:true,
+      milestone:'MVP3: Autonomous 3D World Authoring, 4-View Adversarial Critic & Closed-Loop Code Rewrite',
+      authoringProvider:'gemini',
+      model:config.model,
+      liveGenerationAvailable:readiness.ready,
+      readinessError:readiness.error || null,
+      modelVerified:verifiedGeminiModel === config.model,
+      proceduralDemoAvailable:true,
+      proceduralDemoBackend:'CPU Blender; no AI inference',
+      geometryBackend:'MoGe-2 (microsoft/MoGe via api.ai3d.dev/v2)',
+      authoringBackend:'Gemini Developer API -> scene-specific Blender Python -> CPU GLB',
+      endpoint:config.endpointUrl,
+    });
   }
 
   // Progress Gallery API (Workflow #4 & Requirement 7)
@@ -782,9 +612,10 @@ const server = http.createServer(async (req, res) => {
       const metricSummary = body.metricSummary || {};
       const groundYThree = Number(metricSummary.groundYThree ?? -1.72);
 
-      const cacheFile = getCacheKey('mvp3_author_v1', {
-        imgHead: cleanPhoto.slice(0, 500),
-        len: cleanPhoto.length,
+      const cacheFile = getCacheKey('mvp3_author_v2', {
+        imageHash: crypto.createHash('sha256').update(imgInput).digest('hex'),
+        gridHash: crypto.createHash('sha256').update(gridInput).digest('hex'),
+        metricSummary,
         thinkingLevel,
       });
 
@@ -883,11 +714,11 @@ Make sure \`bpyCode\` is syntactic, self-contained Python code (no markdown back
 
       const parts = [
         { text: 'UPLOADED ARCHITECTURAL PHOTOGRAPH:' },
-        { inlineData: { mimeType: 'image/jpeg', data: cleanPhoto } },
+        inlineImage(imgInput),
       ];
       if (cleanGrid) {
         parts.push({ text: 'ANNOTATED NUMBERED X/Y METRIC GRID & HORIZON OVERLAY:' });
-        parts.push({ inlineData: { mimeType: 'image/png', data: cleanGrid } });
+        parts.push(inlineImage(gridInput, 'image/png'));
       }
       parts.push({ text: prompt });
 
@@ -937,8 +768,10 @@ Make sure \`bpyCode\` is syntactic, self-contained Python code (no markdown back
       const telemetry = body.blenderTelemetry || {};
       const thinkingLevel = body.thinkingLevel || 'MEDIUM';
 
-      const cacheFile = getCacheKey(`mvp3_critic_r${roundNum}`, {
-        origHead: origPhoto.slice(0, 300),
+      const cacheFile = getCacheKey(`mvp3_critic_v2_r${roundNum}`, {
+        imageHash: crypto.createHash('sha256').update(body.originalImageDataUrl || '').digest('hex'),
+        targetHash: crypto.createHash('sha256').update(body.targetRenderDataUrl || '').digest('hex'),
+        views, telemetry,
         codeHash: crypto.createHash('sha256').update(bpyCode).digest('hex').slice(0, 16),
         roundNum,
         thinkingLevel,
@@ -1007,27 +840,27 @@ Include at least 3 detailed items in \`deficiencies\`.
 
       const parts = [
         { text: 'REFERENCE PHOTOGRAPH:' },
-        { inlineData: { mimeType: 'image/jpeg', data: origPhoto } },
+        inlineImage(body.originalImageDataUrl),
       ];
       if (targetRender) {
         parts.push({ text: 'NANO BANANA PHOTOREALISTIC TARGET RENDER:' });
-        parts.push({ inlineData: { mimeType: 'image/jpeg', data: targetRender } });
+        parts.push(inlineImage(body.targetRenderDataUrl));
       }
       if (vOrig) {
         parts.push({ text: 'SCREENSHOT 1 — ORIGINAL CAMERA [0,0,0] 3D RENDER:' });
-        parts.push({ inlineData: { mimeType: 'image/png', data: vOrig } });
+        parts.push(inlineImage(views.originalCam, 'image/png'));
       }
       if (v34) {
         parts.push({ text: 'SCREENSHOT 2 — 3/4 OVERVIEW 3D RENDER:' });
-        parts.push({ inlineData: { mimeType: 'image/png', data: v34 } });
+        parts.push(inlineImage(views.threeQuarter, 'image/png'));
       }
       if (vLow) {
         parts.push({ text: 'SCREENSHOT 3 — LOW GROUND-ANGLE 3D RENDER:' });
-        parts.push({ inlineData: { mimeType: 'image/png', data: vLow } });
+        parts.push(inlineImage(views.lowAngle, 'image/png'));
       }
       if (vWire) {
         parts.push({ text: 'SCREENSHOT 4 — 3D WIREFRAME GEOMETRY VIEW:' });
-        parts.push({ inlineData: { mimeType: 'image/png', data: vWire } });
+        parts.push(inlineImage(views.wireframe, 'image/png'));
       }
       parts.push({ text: criticPrompt });
 
@@ -1075,8 +908,10 @@ Include at least 3 detailed items in \`deficiencies\`.
       const groundYThree = Number(metricSummary.groundYThree ?? round1Telemetry.groundYThreeMeters ?? -1.72);
       const thinkingLevel = body.thinkingLevel || 'MEDIUM';
 
-      const cacheFile = getCacheKey('mvp3_rewrite_v1', {
-        origHead: origPhoto.slice(0, 300),
+      const cacheFile = getCacheKey('mvp3_rewrite_v2', {
+        imageHash: crypto.createHash('sha256').update(body.originalImageDataUrl || '').digest('hex'),
+        targetHash: crypto.createHash('sha256').update(body.targetRenderDataUrl || '').digest('hex'),
+        views, round1Telemetry, metricSummary, critique,
         r1Hash: crypto.createHash('sha256').update(round1Code).digest('hex').slice(0, 16),
         critHash: crypto.createHash('sha256').update(JSON.stringify(critique.deficiencies || [])).digest('hex').slice(0, 16),
         thinkingLevel,
@@ -1156,19 +991,19 @@ Return ONLY valid JSON matching this schema:
 
       const parts = [
         { text: 'REFERENCE PHOTOGRAPH:' },
-        { inlineData: { mimeType: 'image/jpeg', data: origPhoto } },
+        inlineImage(body.originalImageDataUrl),
       ];
       if (targetRender) {
         parts.push({ text: 'NANO BANANA PHOTOREALISTIC TARGET RENDER:' });
-        parts.push({ inlineData: { mimeType: 'image/jpeg', data: targetRender } });
+        parts.push(inlineImage(body.targetRenderDataUrl));
       }
       if (vOrig) {
         parts.push({ text: 'ROUND 1 ORIGINAL CAMERA [0,0,0] RENDER:' });
-        parts.push({ inlineData: { mimeType: 'image/png', data: vOrig } });
+        parts.push(inlineImage(views.originalCam, 'image/png'));
       }
       if (vLow) {
         parts.push({ text: 'ROUND 1 LOW GROUND-ANGLE RENDER:' });
-        parts.push({ inlineData: { mimeType: 'image/png', data: vLow } });
+        parts.push(inlineImage(views.lowAngle, 'image/png'));
       }
       parts.push({ text: rewritePrompt });
 

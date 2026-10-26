@@ -1,5 +1,5 @@
 // Real browser Upload -> cached result from a previously authenticated AI3D MoGe-2 job.
-// No HTTP, inference, geometry, or browser storage mocks. Vertex-unavailable behavior
+// No HTTP, inference, geometry, or browser storage mocks. Gemini-authoring-unavailable behavior
 // is checked explicitly; successful metric depth is not claimed as authored architecture.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -37,12 +37,13 @@ for (const filename of ['points.exr', 'depth.exr', 'image.png']) {
     await page.goto(base);
     await page.waitForFunction(() => state.displayedWorld?.branchId === 'orig' && !state.isInitializing && state.photoDataUrl && state.loadedContextId);
     const services = await page.evaluate(async () => {
-      const [depth,vertex] = await Promise.all([fetch('/api/depth-status').then(r => r.json()),fetch('/api/status').then(r => r.json())]);
-      return {depthAvailable:depth.depthAvailable,depthKeyConfigured:depth.apiKeyConfigured,vertexAvailable:vertex.liveGenerationAvailable};
+      const [depth,authoring] = await Promise.all([fetch('/api/depth-status').then(r => r.json()),fetch('/api/status').then(r => r.json())]);
+      return {depthAvailable:depth.depthAvailable,depthKeyConfigured:depth.apiKeyConfigured,authoringAvailable:authoring.liveGenerationAvailable,authoringProvider:authoring.authoringProvider};
     });
     assert.equal(services.depthAvailable,true,'Real cloud depth service must be running');
     assert.equal(services.depthKeyConfigured,true,'This check expects the newly configured real AI3D binding');
-    assert.equal(services.vertexAvailable,false,'This scenario verifies honest depth-only behavior while Vertex is unavailable');
+    assert.equal(services.authoringProvider,'gemini','Live authoring uses the Gemini Developer API');
+    assert.equal(services.authoringAvailable,false,'This scenario verifies honest depth-only behavior while Gemini authoring is not configured');
     const before = await page.evaluate(() => ({
       source:state.photoDataUrl,contextId:state.loadedContextId,metricSummary:state.metricSummary,
       contexts:JSON.stringify(state.historyContexts),branches:JSON.stringify(state.branches),
@@ -93,12 +94,12 @@ for (const filename of ['points.exr', 'depth.exr', 'image.png']) {
     assert.equal(preview.activeBranch,null,'Metric depth alone must not invent an authored history');
     assert.equal(preview.branches,before.branches);
     assert.equal(preview.contexts,before.contexts);
-    assert.match(preview.status,/Depth ready.*Vertex credentials.*No reconstructed history/i);
+    assert.match(preview.status,/Depth ready.*GEMINI_API_KEY.*GEMINI_MODEL.*No reconstructed history/i);
     assert.match(preview.hero,/Metric depth recovered.*authoring.*not completed/i);
     const depthRequests = requests.filter(request => request.url.endsWith('/api/depth'));
     assert.equal(depthRequests.length,1);
     assert.equal(JSON.parse(depthRequests[0].body).imageDataUrl,'data:image/jpeg;base64,' + imageBytes.toString('base64'));
-    assert.ok(!requests.some(request => /mvp3-author|mvp3-rewrite|mvp3-critic/.test(request.url)),'Unavailable Vertex must stop authoring and critique');
+    assert.ok(!requests.some(request => /mvp3-author|mvp3-rewrite|mvp3-critic/.test(request.url)),'Unavailable Gemini authoring must stop authoring and critique');
     await page.screenshot({path:'/tmp/cloud-live-depth.png'});
     await page.click('#camViewSwitcher [data-cam="threeQuarter"]');
     await page.waitForFunction(() => !navState.isTweening && state.activeCamPreset === 'threeQuarter');
@@ -119,7 +120,7 @@ for (const filename of ['points.exr', 'depth.exr', 'image.png']) {
     assert.equal(photoMeshRemoved,true,'Cancel should remove the uploaded depth preview');
     assert.deepEqual(errors,[]);
     console.log('PASS real cached AI3D/MoGe Upload -> metric 3D preview',JSON.stringify({wallMs:elapsed,cached:result.cached,grid:preview.grid,vertices:preview.pointVertices,triangles:preview.triangles,fovYDeg:result.intrinsics.fovYDeg,meshReturned:Boolean(result.meshGlbUrl)}));
-    console.log('PASS explicit Vertex blocker, no fake authored root or critic result, original history/source restored on cancel; no browser errors');
+    console.log('PASS explicit Gemini API setup blocker, no fake authored root or critic result, original history/source restored on cancel; no browser errors');
   } finally {
     await browser.close();
   }

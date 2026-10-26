@@ -29,7 +29,7 @@ test('HTTP causal routes reject failed compilation and rebuild invalid Blender c
     };
     const key = { imageHash:hash(originalPhoto), sourceHash:hash(body.verifiedBpyCode),
       metricSummary:body.metricSummary, interventionText:body.interventionText, thinkingLevel:body.thinkingLevel };
-    const cacheFile = path.join(cache, `mvp3_causal_v2_${hash(JSON.stringify(key)).slice(0,24)}.json`);
+    const cacheFile = path.join(cache, `mvp3_causal_v2_${hash(JSON.stringify({provider:'gemini',model:process.env.GEMINI_MODEL === undefined ? 'gemini-4-argon' : process.env.GEMINI_MODEL.trim(),input:key})).slice(0,24)}.json`);
     fs.writeFileSync(cacheFile, JSON.stringify({data:{eras:[{year, eraBpyCode:source}]},latencyMs:0}), {flag:'wx'});
     created.add(cacheFile);
     const spec = {stage:`mvp3_era_${year}`,bpyCode:source,groundYThree:-1.72};

@@ -334,7 +334,7 @@ async function checkBackendStatus() {
     const data = await res.json();
     if (data.ok) {
       if (dom.modelMetaInfo) {
-        dom.modelMetaInfo.textContent = data.liveGenerationAvailable ? `Vertex AI (${data.project}) | ${data.model}` : 'CPU procedural demo available · Live AI credentials not configured';
+        dom.modelMetaInfo.textContent = data.liveGenerationAvailable ? `${authoringProviderName(data)} | ${data.model || 'configured model'}` : `CPU procedural demo available · ${authoringReadinessMessage(data)}`;
       }
     } else {
       showApiError(data);
@@ -2528,6 +2528,16 @@ async function selectUploadedImage(file) {
     throw error;
   }
 }
+function authoringProviderName(status = {}) {
+  return status.authoringProvider === 'vertex' ? 'Vertex AI' : 'Gemini API';
+}
+function authoringReadinessMessage(status = {}) {
+  if (status.authoringProvider === 'vertex') return 'Vertex AI authentication and model configuration are required to generate architecture and run the critic.';
+  const error = typeof status.readinessError === 'string' ? status.readinessError : `${status.readinessError?.code || ''} ${status.readinessError?.message || ''}`;
+  if (/model/i.test(error) && !/key|credential/i.test(error)) return 'Choose an accessible GEMINI_MODEL in cloud environment settings to generate architecture and run the critic.';
+  if (/key|credential|auth/i.test(error)) return 'Configure GEMINI_API_KEY securely and select an accessible GEMINI_MODEL in cloud environment settings to generate architecture and run the critic.';
+  return 'Configure GEMINI_API_KEY and an accessible GEMINI_MODEL in cloud environment settings to generate architecture and run the critic.';
+}
 async function readLiveServiceStatus(url) {
   try {
     const response = await fetch(url);
@@ -2567,7 +2577,7 @@ async function reconstructUploadedImage() {
   closeAllPopovers();hideApiError();
   try {
     setLiveImageStatus('Checking cloud reconstruction services…', 'busy');
-    const [vertex,depth] = await Promise.all([readLiveServiceStatus('/api/status'),readLiveServiceStatus('/api/depth-status')]);
+    const [authoring,depth] = await Promise.all([readLiveServiceStatus('/api/status'),readLiveServiceStatus('/api/depth-status')]);
     if (depth.available && depth.depthAvailable === false) throw new Error(depth.message || 'The AI3D depth service is not running. Start it in the cloud before reconstructing.');
     await loadPhotoFromDataUrl(pending.dataUrl);
     state.samplePath = `upload:${pending.name}`;
@@ -2576,10 +2586,11 @@ async function reconstructUploadedImage() {
     await step1GroundWithMogeAnd2DPlan();
     depthReady = true;pending.phase = 'depth-ready';
     uploadedDepthPreview(pending);
-    if (!vertex.available || !vertex.liveGenerationAvailable) {
-      const message = 'Depth ready; Vertex credentials are required to generate architecture and run the critic. No reconstructed history has been created.';
-      pending.phase = 'blocked';setLiveImageStatus(message,'blocked');setStatus('busy','Depth ready · Vertex required for architecture');
-      return {ok:false,depthReady:true,blocker:'credentials',phase:'depth-ready'};
+    if (!authoring.available || !authoring.liveGenerationAvailable) {
+      const message = `Depth ready; ${authoringReadinessMessage(authoring)} No reconstructed history has been created.`;
+      pending.phase = 'blocked';setLiveImageStatus(message,'blocked');setStatus('busy',`Depth ready · ${authoringProviderName(authoring)} setup required`);
+      const error = typeof authoring.readinessError === 'string' ? authoring.readinessError : authoring.readinessError?.code || '';
+      return {ok:false,depthReady:true,blocker:/model/i.test(error)?'configuration':'credentials',phase:'depth-ready'};
     }
     pending.phase = 'authoring';setLiveImageStatus('2/4 · Generating architecture from the uploaded image…', 'busy');
     await step2AuthorRound1World();
