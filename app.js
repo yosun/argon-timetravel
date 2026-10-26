@@ -100,6 +100,7 @@ let wireframeMesh = null;
 let fullIndexAttr = null;
 let displacedIndexAttr = null;
 let proceduralGroup = null;
+let diagnosticCaptureInFlight = false;
 
 let basePhotoCanvas = null;
 let dynamicTextureCanvas = null;
@@ -507,7 +508,7 @@ function setCameraPreset(presetName, animate = true) {
   const groundY = state.metricSummary?.groundYThree ?? -1.72;
   const midZ = -6.2;
 
-  if (wireframeMesh) wireframeMesh.visible = presetName === 'wireframe';
+  if (wireframeMesh) wireframeMesh.visible = !diagnosticCaptureInFlight && presetName === 'wireframe';
   proceduralGroup.traverse((child) => {
     if (child.isMesh && child.material) {
       const mats = Array.isArray(child.material) ? child.material : [child.material];
@@ -570,41 +571,108 @@ function updateCameraHud(labelOverride) {
 }
 
 /**
- * Captures 4 diagnostic screenshots for the Adversarial Critic.
- * Temporarily switches to calibrated 640x480 resolution to preserve critic cache keys.
+ * Captures only the loaded GLB for the critic. Source-photo/depth geometry must
+ * never supply apparent detail that is absent from the exported reconstruction.
  */
 async function captureFourDiagnosticScreenshots() {
-  const prevW = window.innerWidth;
-  const prevH = window.innerHeight;
-  const prevPreset = state.activeCamPreset;
+  if (diagnosticCaptureInFlight) throw new Error('Diagnostic capture is already running.');
+  let hasGeometry = false;
+  proceduralGroup?.traverse(object => {
+    if (object.isMesh && object.geometry?.attributes?.position?.count >= 3) hasGeometry = true;
+  });
+  if (!hasGeometry) throw new Error('Load an exported reconstruction before capturing critic views.');
 
-  // Temporarily hide overlays
-  if (dom.eraHeroOverlay) dom.eraHeroOverlay.style.visibility = 'hidden';
-  if (dom.cinematicTimelineBar) dom.cinematicTimelineBar.style.visibility = 'hidden';
-  if (dom.causalAncestryPopover) dom.causalAncestryPopover.style.display = 'none';
+  const startedAt = performance.now();
+  const previous = {
+    size: renderer.getSize(new THREE.Vector2()),
+    pixelRatio: renderer.getPixelRatio(),
+    camera: camera.clone(),
+    preset: state.activeCamPreset,
+    nav: Object.fromEntries(Object.entries(navState).map(([key, value]) => [key, value?.clone ? value.clone() : value])),
+    overrideMaterial: scene.overrideMaterial,
+    photoIndex: photoMesh?.geometry?.getIndex(),
+    pointerEvents: dom.threeCanvas.style.pointerEvents,
+    cameraLabel: dom.hudCameraPose?.textContent,
+  };
+  const visibility = new Map();
+  const materials = new Map();
+  scene.traverse(object => {
+    visibility.set(object, object.visible);
+    const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+    objectMaterials.filter(Boolean).forEach(material => {
+      if (!materials.has(material)) materials.set(material, {wireframe: material.wireframe, opacity: material.opacity});
+    });
+  });
+  const overlays = [...new Set([
+    dom.eraHeroOverlay, dom.cinematicTimelineBar, dom.causalAncestryPopover,
+    dom.splitCompareOverlay, dom.objectHoverHud, dom.cinematicToast,
+  ].filter(Boolean))].map(element => ({element, visibility: element.style.visibility}));
+  const buttons = Array.from(dom.camButtons || []).map(element => ({
+    element, disabled: element.disabled, active: element.classList.contains('active'),
+  }));
+  const isAuthoredObject = object => {
+    for (let current = object; current; current = current.parent) if (current === proceduralGroup) return true;
+    return false;
+  };
+  const isolateReconstruction = () => {
+    scene.traverse(object => {
+      if (object === photoMesh || object === wireframeMesh ||
+          (!isAuthoredObject(object) && (object.isMesh || object.isLine || object.isPoints || object.isSprite))) {
+        object.visible = false;
+      }
+    });
+    proceduralGroup.visible = true;
+  };
 
-  // Fixed 640x480 for critic consistency
-  renderer.setSize(640, 480, false);
-  camera.aspect = 640 / 480;
-  camera.updateProjectionMatrix();
+  diagnosticCaptureInFlight = true;
+  try {
+    navState.isTweening = false;
+    navState.isDragging = false;
+    dom.threeCanvas.style.pointerEvents = 'none';
+    overlays.forEach(({element}) => { element.style.visibility = 'hidden'; });
+    buttons.forEach(({element}) => { element.disabled = true; });
+    scene.overrideMaterial = null;
+    renderer.setPixelRatio(1);
+    renderer.setSize(1280, 960, false);
+    camera.aspect = 1280 / 960;
+    camera.updateProjectionMatrix();
 
-  const shots = {};
-  for (const preset of ['originalCam', 'threeQuarter', 'lowAngle', 'wireframe']) {
-    setCameraPreset(preset, false);
+    const shots = {};
+    for (const preset of ['originalCam', 'threeQuarter', 'lowAngle', 'wireframe']) {
+      // Presets also toggle the source depth mesh; re-isolate after each change.
+      isolateReconstruction();
+      setCameraPreset(preset, false);
+      isolateReconstruction();
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      renderer.render(scene, camera);
+      shots[preset] = dom.threeCanvas.toDataURL('image/png');
+    }
+    return shots;
+  } finally {
+    visibility.forEach((visible, object) => { object.visible = visible; });
+    materials.forEach((properties, material) => { Object.assign(material, properties); });
+    if (photoMesh?.geometry && previous.photoIndex !== undefined) photoMesh.geometry.setIndex(previous.photoIndex);
+    scene.overrideMaterial = previous.overrideMaterial;
+    renderer.setPixelRatio(previous.pixelRatio);
+    renderer.setSize(previous.size.x, previous.size.y, false);
+    camera.copy(previous.camera, false);
+    state.activeCamPreset = previous.preset;
+    Object.entries(previous.nav).forEach(([key, value]) => {
+      if (navState[key]?.copy && value?.clone) navState[key].copy(value);
+      else navState[key] = value;
+    });
+    // Pause an in-progress camera tween while the offscreen views are captured.
+    if (navState.isTweening) navState.tweenStartTime += performance.now() - startedAt;
+    dom.threeCanvas.style.pointerEvents = previous.pointerEvents;
+    overlays.forEach(({element, visibility}) => { element.style.visibility = visibility; });
+    buttons.forEach(({element, disabled, active}) => {
+      element.disabled = disabled;
+      element.classList.toggle('active', active);
+    });
+    if (dom.hudCameraPose) dom.hudCameraPose.textContent = previous.cameraLabel;
+    diagnosticCaptureInFlight = false;
     renderer.render(scene, camera);
-    shots[preset] = dom.threeCanvas.toDataURL('image/png');
   }
-
-  // Restore full viewport dimensions
-  renderer.setSize(prevW, prevH, false);
-  camera.aspect = prevW / prevH;
-  camera.updateProjectionMatrix();
-
-  if (dom.eraHeroOverlay) dom.eraHeroOverlay.style.visibility = 'visible';
-  if (dom.cinematicTimelineBar) dom.cinematicTimelineBar.style.visibility = 'visible';
-  setCameraPreset(prevPreset || 'originalCam', false);
-
-  return shots;
 }
 
 function displayFourDiagnosticScreenshots(viewsObj, roundNum) {
@@ -1852,14 +1920,16 @@ function renderCriticInspector() {
   const c1 = state.critiqueR1;
   const c2 = state.critiqueR2;
   const fixes = state.round2?.fixesApplied || [];
+  const accepted = c2?.passedThreshold === true && c2?.acceptance?.accepted === true && c2.overallRatingOutOf10 >= 9;
 
   const scoreBanner = c2
-    ? `<div style="background:rgba(16,185,129,0.14);border:1px solid #10b981;border-radius:8px;padding:12px;margin-bottom:12px;">
+    ? `<div style="background:${accepted ? 'rgba(16,185,129,0.14)' : 'rgba(245,158,11,0.14)'};border:1px solid ${accepted ? '#10b981' : '#f59e0b'};border-radius:8px;padding:12px;margin-bottom:12px;">
          <div style="display:flex;justify-content:space-between;align-items:center;">
-           <strong style="color:#34d399;font-size:12px;">ROUND 2 CRITIQUE</strong>
+           <strong style="color:${accepted ? '#34d399' : '#fbbf24'};font-size:12px;">${accepted ? 'ROUND 2 · RENDERED CRITIC ACCEPTED' : 'ROUND 2 DRAFT · NOT ACCEPTED'}</strong>
            <span style="font-family:var(--font-mono);font-size:13px;font-weight:700;color:#f8fafc;">${c1.overallRatingOutOf10} → ${c2.overallRatingOutOf10} / 10</span>
          </div>
-         <p style="margin:6px 0 0;font-size:11px;color:#cbd5e1;">${state.round2?.rewriteSummary || c2.executiveSummary || ''}</p>
+         <p style="margin:6px 0 0;font-size:11px;color:#cbd5e1;">${c2.executiveSummary || state.round2?.rewriteSummary || ''}</p>
+         <p style="margin:6px 0 0;font-size:11px;color:#cbd5e1;">${accepted ? 'Critic threshold met. Exported-artifact review is required before demo promotion.' : 'This draft has not met rendered acceptance of at least 9/10.'}</p>
        </div>`
     : `<div style="background:rgba(245,158,11,0.14);border:1px solid #f59e0b;border-radius:8px;padding:12px;margin-bottom:12px;">
          <div style="display:flex;justify-content:space-between;align-items:center;">

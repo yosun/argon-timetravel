@@ -6,6 +6,7 @@ const { validateBlenderResult } = require('./blender-result');
 const { planFork } = require('./demo-worlds');
 const gemini = require('./gemini-client');
 const { inlineImage, responseCacheKey } = require('./gemini-inputs');
+const { validateCriticImages, assessCritique } = require('./critic-evidence');
 const { execSync, exec } = require('child_process');
 
 const PORT = process.env.PORT || 3456;
@@ -756,6 +757,7 @@ Make sure \`bpyCode\` is syntactic, self-contained Python code (no markdown back
   if (req.method === 'POST' && pathname === '/api/argon/mvp3-critic') {
     try {
       const body = await readJsonBody(req);
+      validateCriticImages(body);
       const origPhoto = (body.originalImageDataUrl || '').replace(/^data:[^;]+;base64,/, '');
       const targetRender = (body.targetRenderDataUrl || '').replace(/^data:[^;]+;base64,/, '');
       const views = body.fourViews || {};
@@ -768,7 +770,7 @@ Make sure \`bpyCode\` is syntactic, self-contained Python code (no markdown back
       const telemetry = body.blenderTelemetry || {};
       const thinkingLevel = body.thinkingLevel || 'MEDIUM';
 
-      const cacheFile = getCacheKey(`mvp3_critic_v2_r${roundNum}`, {
+      const cacheFile = getCacheKey(`mvp3_critic_v3_r${roundNum}`, {
         imageHash: crypto.createHash('sha256').update(body.originalImageDataUrl || '').digest('hex'),
         targetHash: crypto.createHash('sha256').update(body.targetRenderDataUrl || '').digest('hex'),
         views, telemetry,
@@ -784,7 +786,7 @@ Make sure \`bpyCode\` is syntactic, self-contained Python code (no markdown back
           cached: true,
           latencyMs: hit.latencyMs,
           usage: hit.usage,
-          critique: hit.data,
+          critique: assessCritique(hit.data),
         });
       }
 
@@ -807,7 +809,10 @@ ${JSON.stringify(telemetry, null, 2)}
 
 Perform a rigorous, unsparing critique of Round ${roundNum}:
 - Inspect all 4 screenshots and the measured 3D bounding-box telemetry.
-- Identify **at least 3 specific, genuine geometric, spatial, ground-contact, structural completeness, or material deficiencies** in the current 3D scene.
+- Judge visual quality from the actual exported-world renders. Source code, passing tests, triangle counts, and prepared target images are not proof of the rendered result.
+- Require meaningful individual leaf geometry, irregular porous tree canopies, detailed architecture and legible scene-specific details, and visible exported texture detail where those features occur. Reject ribbon palms, balloon-like tree blobs, primitive stand-ins, and materials that disappeared during GLB export.
+- A passing draft must score at least 9.0/10 with no unresolved high-severity deficiencies. Set passedThreshold false for any lower score. Targets are references, never evidence that the generated world already matches them.
+- Identify specific, genuine geometric, spatial, ground-contact, structural completeness, or material deficiencies visible in these renders. Do not invent deficiencies to fill a quota.
 - Provide concrete, actionable instructions for how the Blender Python (\`bpyCode\`) and Three.js scene must be rewritten to fix each deficiency.
 
 Return ONLY valid JSON matching this schema:
@@ -835,7 +840,7 @@ Return ONLY valid JSON matching this schema:
     }
   ]
 }
-Include at least 3 detailed items in \`deficiencies\`.
+Include every material unresolved deficiency in \`deficiencies\`; an accepted result may have an empty list.
 `;
 
       const parts = [
@@ -862,6 +867,10 @@ Include at least 3 detailed items in \`deficiencies\`.
         parts.push({ text: 'SCREENSHOT 4 — 3D WIREFRAME GEOMETRY VIEW:' });
         parts.push(inlineImage(views.wireframe, 'image/png'));
       }
+      if (views.clockDetail) {
+        parts.push({ text: 'SCREENSHOT 5 — ACTUAL EXPORTED CLOCK-FACE CLOSE-UP: inspect hands, numerals, depth, legibility and exported texture detail.' });
+        parts.push(inlineImage(views.clockDetail, 'image/png'));
+      }
       parts.push({ text: criticPrompt });
 
       const result = await callGemini4Argon({
@@ -871,13 +880,14 @@ Include at least 3 detailed items in \`deficiencies\`.
         parts,
       });
 
-      writeCache(cacheFile, result);
+      const critique = assessCritique(result.data);
+      writeCache(cacheFile, {...result,data:critique});
       return sendJson(res, 200, {
         ok: true,
         cached: false,
         latencyMs: result.latencyMs,
         usage: result.usage,
-        critique: result.data,
+        critique,
       });
     } catch (err) {
       return sendJson(res, err.status || 500, {

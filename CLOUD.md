@@ -30,9 +30,12 @@ npm_config_cache=/tmp/npm-cache npm install --prefix /tmp/browser-tools playwrig
 NODE_PATH=/tmp/browser-tools/node_modules node tests/browser-smoke.cjs
 NODE_PATH=/tmp/browser-tools/node_modules node tests/browser-demo.cjs
 NODE_PATH=/tmp/browser-tools/node_modules node tests/browser-upload.cjs
+NODE_PATH=/tmp/browser-tools/node_modules node tests/browser-diagnostics.cjs
 ```
 
 The browser check uses /usr/bin/chromium and cloud-internal HTTP. It verifies actual WebGL startup, intermediate-year selection, rapid navigation, and browser history persistence. It calls the real CPU Blender demo endpoint, verifies geometry names and source inheritance through nested histories, reloads a saved history, and checks failed-asset retention. No generation or depth response is mocked in this browser run; the procedural demo does not call AI3D or Gemini. It writes /tmp/cloud-workbench-verified.png. Set TEST_BASE_URL to target another cloud-internal server port. Separate Node workflow tests mock model responses explicitly; backend HTTP tests seed AI plan fixtures but execute real Blender.
+
+The diagnostic browser check renders the committed GLB at 1280×960, checks that source-photo/depth/debug geometry cannot contaminate critic images, and checks exact viewport restoration after success and capture failure. It makes no AI calls and does not establish visual quality. Incoming visual artifacts, exported-GLB reimport rendering, independent 9/10 acceptance, and prepared-example intake are described in [PREPARED_EXAMPLES.md](PREPARED_EXAMPLES.md).
 
 ## Live reconstruction architecture and prerequisites
 
