@@ -42,7 +42,11 @@ const state = {
   causalSimulation: null,
   branches: {},
   historyContexts: {},
+  historyPersistenceBlocked: false,
   loadedContextId: null,
+  pendingUpload: null,
+  isReconstructingImage: false,
+  isInitializing: true,
   activeBranchKey: 'orig',
   selected3DObject: null,
   eraRenders: {},
@@ -212,6 +216,13 @@ function cacheDomElements() {
 
     sampleSelect: document.getElementById('sampleSelect'),
     photoInput: document.getElementById('photoInput'),
+    btnUploadImage: document.getElementById('btnUploadImage'),
+    liveImagePanel: document.getElementById('liveImagePanel'),
+    uploadedImagePreview: document.getElementById('uploadedImagePreview'),
+    uploadedImageName: document.getElementById('uploadedImageName'),
+    liveImageStatus: document.getElementById('liveImageStatus'),
+    btnReconstructImage: document.getElementById('btnReconstructImage'),
+    btnCancelImage: document.getElementById('btnCancelImage'),
     thinkingLevelSelect: document.getElementById('thinkingLevelSelect'),
     btnRunDemoLoop: document.getElementById('btnRunDemoLoop'),
     btnStep1Ground: document.getElementById('btnStep1Ground'),
@@ -311,6 +322,10 @@ async function initApp() {
     await loadSelectedSample(dom.sampleSelect ? dom.sampleSelect.value : 'samples/cloister_courtyard.jpg');
     await loadDemoHistory();
   } catch (err) { showApiError(err.message); }
+  finally {
+    state.isInitializing = false;
+    if (dom.btnReconstructImage && state.pendingUpload?.image) dom.btnReconstructImage.disabled = false;
+  }
 }
 
 async function checkBackendStatus() {
@@ -663,6 +678,8 @@ async function loadPhotoFromDataUrl(dataUrl) {
       state.mogeData = null; state.metricSummary = null;
       state.round1 = null; state.round2 = null; state.critiqueR1 = null; state.critiqueR2 = null;
       state.gridOverlayDataUrl = null; state.floorplanSvgDataUrl = null; state.targetRenderDataUrl = null;
+      state.metrics = {r1SameCamSim:null,r2SameCamSim:null,r1GroundErrorMeters:null,r2GroundErrorMeters:null};
+      state.latencies = {mogeMs:0,authorR1Ms:0,blenderR1Ms:0,criticR1Ms:0,rewriteR2Ms:0,blenderR2Ms:0,criticR2Ms:0,causalMs:0};
       state.photoDataUrl = dataUrl;
       state.photoWidth = img.naturalWidth || img.width;
       state.photoHeight = img.naturalHeight || img.height;
@@ -876,6 +893,8 @@ const navigateWorld = WorldNavigation.createNavigator(
   world => {
     [...proceduralGroup.children].forEach(child => { proceduralGroup.remove(child); disposeWorld(child); });
     proceduralGroup.add(world);
+    proceduralGroup.visible = true;
+    if (dom.toggleBlenderGlb) dom.toggleBlenderGlb.checked = true;
     renderer.render(scene, camera);
   }, disposeWorld
 );
@@ -1547,10 +1566,10 @@ async function step4RewriteAndRerenderRound2(options = {}) {
   const reconstructionId = crypto.randomUUID();
   state.branches[reconstructionId] = CausalHistory.freeze({
     id: reconstructionId, parentId: null, forkYear: null,
-    branchTitle: 'Reconstructed present', contextId: captureHistoryContext(),
+    branchTitle: state.isReconstructingImage && state.pendingUpload ? `Reconstructed · ${state.pendingUpload.name}` : 'Reconstructed present', contextId: captureHistoryContext(),
     eras: [{ year: 2026, eraTitle: 'Reconstructed present', provenance: 'AI-authored geometry; critic results are shown separately.', eraBpyCode: data.round2.rewrittenBpyCode, blenderGlbUrl: data.round2.blenderGlbUrl }]
   });
-  persistHistories();
+  await persistHistories();
   renderHistoryNavigator();
   state.latencies.rewriteR2Ms = data.latencyMs || 0;
   state.latencies.blenderR2Ms = data.round2.blenderLatencyMs || 0;
@@ -1616,7 +1635,7 @@ const disabledGenerationControls = new Map();
 function setHistoryGenerationBusy(busy) {
   state.isGeneratingHistory = busy;
   if (busy) {
-    const controls = Object.entries(dom).filter(([key, value]) => value && /^(btnBranch|btnApplyIntervention|btnStep|btnRun|btnReturnToPresent|btnDirect|btnOpenIntervene|sampleSelect|photoInput|timeScrubberRange)/.test(key)).map(([,value]) => value);
+    const controls = Object.entries(dom).filter(([key, value]) => value && /^(btnBranch|btnApplyIntervention|btnStep|btnRun|btnReturnToPresent|btnDirect|btnOpenIntervene|sampleSelect|photoInput|timeScrubberRange|btnUploadImage|btnReconstructImage|btnCancelImage)/.test(key)).map(([,value]) => value);
     controls.push(...(dom.stageButtons || []), ...(dom.camButtons || []));
     const demoButton = globalThis.document?.getElementById('btnThreeMinuteDemo');
     if (demoButton) controls.push(demoButton);
@@ -1632,6 +1651,10 @@ function setHistoryGenerationBusy(busy) {
   renderHistoryNavigator();
 }
 async function step5RunMultiEpochCausalSimulation(customIntervention, options = {}) {
+  if (state.pendingUpload && !state.isReconstructingImage) {
+    setLiveImageStatus('Reconstruct or cancel the selected image before changing its history.', 'blocked');
+    return false;
+  }
   if (state.isGeneratingHistory || state.isReturnWarpActive) return false;
   setHistoryGenerationBusy(true);
   try { return await performCausalHistoryGeneration(customIntervention, options); }
@@ -1743,7 +1766,7 @@ async function performCausalHistoryGeneration(customIntervention, options = {}) 
 
     const branchKey = crypto.randomUUID();
     state.branches[branchKey] = CausalHistory.fork(state.branches, parentId, forkYear, {...causalData.causalSimulation, intervention:interventionText}, branchKey);
-    persistHistories();
+    await persistHistories();
     if (!await syncWorldToYear(2026, branchKey, {internal:true})) throw new Error('Generated history is saved, but its world could not be loaded.');
     state.causalSimulation = state.branches[branchKey];
     renderHistoryNavigator();
@@ -1833,7 +1856,7 @@ function renderCriticInspector() {
   const scoreBanner = c2
     ? `<div style="background:rgba(16,185,129,0.14);border:1px solid #10b981;border-radius:8px;padding:12px;margin-bottom:12px;">
          <div style="display:flex;justify-content:space-between;align-items:center;">
-           <strong style="color:#34d399;font-size:12px;">✓ CLOSED-LOOP VERIFICATION PASSED</strong>
+           <strong style="color:#34d399;font-size:12px;">ROUND 2 CRITIQUE</strong>
            <span style="font-family:var(--font-mono);font-size:13px;font-weight:700;color:#f8fafc;">${c1.overallRatingOutOf10} → ${c2.overallRatingOutOf10} / 10</span>
          </div>
          <p style="margin:6px 0 0;font-size:11px;color:#cbd5e1;">${state.round2?.rewriteSummary || c2.executiveSummary || ''}</p>
@@ -1853,7 +1876,7 @@ function renderCriticInspector() {
       <div style="margin-bottom:10px;padding:10px;background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);border-left:3px solid ${matchingFix ? '#10b981' : '#f59e0b'};border-radius:6px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
           <strong style="color:#f8fafc;font-size:11px;">[${d.id || idx + 1}] ${d.category?.toUpperCase()}</strong>
-          <span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;background:${matchingFix ? '#059669' : '#b45309'};color:#fff;">${matchingFix ? 'FIXED IN R2' : d.severity}</span>
+          <span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;background:${matchingFix ? '#059669' : '#b45309'};color:#fff;">${matchingFix ? 'APPLIED IN R2' : d.severity}</span>
         </div>
         <div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;"><strong>Critic Diagnosis:</strong> ${d.diagnosis}</div>
         <div style="font-size:11px;color:#fde68a;"><strong>Required Fix:</strong> ${d.requiredCodeFix}</div>
@@ -2140,18 +2163,16 @@ function bindEvents() {
   if (dom.sampleSelect) {
     dom.sampleSelect.addEventListener('change', () => loadSelectedSample(dom.sampleSelect.value));
   }
-  if (dom.photoInput) {
-    dom.photoInput.addEventListener('change', (e) => {
-      const file = e.target.files && e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
-        await loadPhotoFromDataUrl(ev.target.result);
-        showToast(`Loaded ${file.name}`);
-      };
-      reader.readAsDataURL(file);
-    });
-  }
+  if (dom.btnUploadImage) dom.btnUploadImage.addEventListener('click', () => {
+    if (!state.isGeneratingHistory && !state.isReturnWarpActive) dom.photoInput?.click();
+  });
+  if (dom.photoInput) dom.photoInput.addEventListener('change', event => {
+    const file = event.target.files?.[0];
+    event.target.value = ''; // Selecting the same file again must emit change.
+    if (file) selectUploadedImage(file).catch(error => setLiveImageStatus(error.message, 'error'));
+  });
+  if (dom.btnReconstructImage) dom.btnReconstructImage.addEventListener('click', () => reconstructUploadedImage().catch(error => showApiError(error.message)));
+  if (dom.btnCancelImage) dom.btnCancelImage.addEventListener('click', () => cancelUploadedImage().catch(error => showApiError(error.message)));
 
   dom.stageButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -2350,12 +2371,19 @@ function captureHistoryContext() {
   state.loadedContextId = contextId;
   return contextId;
 }
-function persistHistories() {
+async function persistHistories() {
+  if (state.historyPersistenceBlocked) {
+    showApiError('Earlier saved histories could not be restored. Their records are retained; new histories remain in this session until browser storage is restored.');
+    return false;
+  }
   try {
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify({branches:state.branches, contexts:state.historyContexts}));
+    const envelope = {branches:state.branches,contexts:state.historyContexts};
+    if (globalThis.HistoryStorage) await HistoryStorage.create({storage:localStorage}).save(HISTORY_STORAGE_KEY,envelope);
+    else localStorage.setItem(HISTORY_STORAGE_KEY,JSON.stringify(envelope));
     return true;
   } catch (_) {
-    showToast('History retained in this session; browser storage is unavailable or full.', 5000);
+    const message = 'History retained in this session; browser storage could not save it. Earlier saved histories are unchanged.';
+    showToast(message,6000);showApiError(message);
     return false;
   }
 }
@@ -2393,25 +2421,34 @@ async function loadDemoHistory() {
   const response = await fetch('/samples/worlds/manifest.json');
   if (!response.ok) throw new Error('Demo worlds missing: run bash scripts/setup-cloud.sh');
   const manifest = await response.json();
+  let savedHistoryReadFailed = false;
   try {
-    const saved = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '{}');
+    const saved = globalThis.HistoryStorage ? await HistoryStorage.create({storage:localStorage}).load(HISTORY_STORAGE_KEY) : JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '{}');
     for (const [id, context] of Object.entries(saved.contexts || {})) state.historyContexts[id] = CausalHistory.freeze(context);
     for (const [id, branch] of Object.entries(saved.branches || {})) {
       if (branch.id === id && Array.isArray(branch.eras)) state.branches[id] = CausalHistory.freeze(branch);
     }
-  } catch (_) { /* Invalid storage cannot prevent a fresh procedural demo. */ }
+  } catch (_) {
+    savedHistoryReadFailed = true;
+    state.historyPersistenceBlocked = true;
+    showToast('Saved histories could not be restored. Their stored records have been retained; the demo remains available.',6000);
+  }
   if (!state.branches.orig) state.branches.orig = CausalHistory.freeze({
     id:'orig', parentId:null, forkYear:null, branchTitle:'Original illustrative world', demo:true,
     provenance:manifest.provenance, contextId:captureHistoryContext(), eras:manifest.eras
   });
-  persistHistories();
+  if (!savedHistoryReadFailed) await persistHistories();
   renderHistoryNavigator(); syncBranchButtons();
   await syncWorldToYear(state.activeYear, 'orig');
   const demoButton = document.getElementById('btnThreeMinuteDemo');
   if (demoButton) demoButton.addEventListener('click', () => runThreeMinuteDemo().catch(err => showApiError(err.message)));
-  showToast('CPU PROCEDURAL DEMO · No AI reconstruction or critic score claimed', 6000);
+  if (!savedHistoryReadFailed) showToast('CPU PROCEDURAL DEMO · No AI reconstruction or critic score claimed', 6000);
 }
 async function runThreeMinuteDemo() {
+  if (state.pendingUpload) {
+    setLiveImageStatus('Cancel the selected image to run the illustrative demo, or reconstruct it to create your own world.', 'blocked');
+    return false;
+  }
   const button = document.getElementById('btnThreeMinuteDemo');
   if (button) button.disabled = true;
   try {
@@ -2424,4 +2461,163 @@ async function runThreeMinuteDemo() {
     showToast('Two preserved causal histories · select any parent or era to compare',6000);
     return {first,second};
   } finally {if (button) button.disabled = false;}
+}
+
+
+const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+const UPLOAD_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+let uploadSelectionVersion = 0;
+function setLiveImageStatus(message, phase = 'selected') {
+  if (dom.liveImagePanel) dom.liveImagePanel.hidden = false;
+  if (dom.liveImageStatus) {
+    dom.liveImageStatus.textContent = message;
+    if (dom.liveImageStatus.dataset) dom.liveImageStatus.dataset.state = phase;
+  }
+  if (dom.btnReconstructImage) dom.btnReconstructImage.disabled = state.isInitializing || state.isReconstructingImage || !state.pendingUpload?.image;
+  if (dom.btnCancelImage) dom.btnCancelImage.disabled = state.isReconstructingImage;
+}
+function currentHistorySelection() {
+  return state.branches[state.activeBranchKey] ? {branchId:state.activeBranchKey,year:state.activeYear} : null;
+}
+async function selectUploadedImage(file) {
+  if (state.isGeneratingHistory || state.isReturnWarpActive) return false;
+  if (!UPLOAD_IMAGE_TYPES.has(file.type)) {
+    setLiveImageStatus('Choose a JPEG, PNG, or WebP image.', 'error');
+    throw new Error('Choose a JPEG, PNG, or WebP image.');
+  }
+  if (!file.size || file.size > MAX_UPLOAD_BYTES) {
+    setLiveImageStatus('Choose a nonempty image no larger than 12 MiB.', 'error');
+    throw new Error('Choose a nonempty image no larger than 12 MiB.');
+  }
+  const selection = ++uploadSelectionVersion;
+  const previous = state.pendingUpload;
+  const pending = {id:crypto.randomUUID(),name:file.name || 'Uploaded image',phase:'reading',dataUrl:null,image:null,
+    returnSelection:currentHistorySelection() || previous?.returnSelection || null};
+  state.pendingUpload = pending;
+  if (dom.uploadedImageName) dom.uploadedImageName.textContent = pending.name;
+  if (dom.uploadedImagePreview) dom.uploadedImagePreview.hidden = true;
+  setLiveImageStatus('Reading image. The displayed world is unchanged.', 'reading');
+  try {
+    const dataUrl = await new Promise((resolve,reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('The image could not be read. Choose it again.'));
+      reader.onabort = () => reject(new Error('Image reading was cancelled.'));
+      reader.readAsDataURL(file);
+    });
+    if (selection !== uploadSelectionVersion) return false;
+    if (dom.uploadedImagePreview) {dom.uploadedImagePreview.src = dataUrl;dom.uploadedImagePreview.hidden = false;}
+    const image = await new Promise((resolve,reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('This file is not a decodable image. Choose another JPEG, PNG, or WebP.'));
+      img.src = dataUrl;
+    });
+    if (selection !== uploadSelectionVersion) return false;
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+    if (!width || !height || width * height > 40_000_000) throw new Error('Choose an image with at most 40 million pixels.');
+    Object.assign(pending,{dataUrl,image,width,height,phase:'selected'});
+    setLiveImageStatus(`${width} × ${height}. Ready to reconstruct. No generation request has been sent.`, 'selected');
+    return true;
+  } catch (error) {
+    if (selection !== uploadSelectionVersion) return false;
+    pending.phase = 'error';pending.image = null;
+    if (dom.uploadedImagePreview) dom.uploadedImagePreview.hidden = true;
+    setLiveImageStatus(error.message, 'error');
+    throw error;
+  }
+}
+async function readLiveServiceStatus(url) {
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+    return {available:response.ok,...data};
+  } catch (error) { return {available:false,message:error.message}; }
+}
+const SOURCE_STATE_KEYS = ['samplePath','photoDataUrl','photoWidth','photoHeight','photoImgElement','gridOverlayDataUrl','floorplanSvgDataUrl','targetRenderDataUrl','mogeData','metricSummary','round1','round2','round1Views','round2Views','critiqueR1','critiqueR2','metrics','latencies','loadedContextId'];
+function uploadedDepthPreview(pending) {
+  proceduralGroup.visible = false;
+  if (dom.toggleBlenderGlb) dom.toggleBlenderGlb.checked = false;
+  state.activeBranchKey = null;state.causalSimulation = null;state.activeStage = 'depth';
+  state.displayedWorld = {branchId:null,year:null,url:null,kind:'depth',uploadId:pending.id};
+  state.selected3DObject = null;
+  syncStageButtons();syncBranchButtons();renderHistoryNavigator();
+  if (dom.heroYearNumber) dom.heroYearNumber.textContent = '3D';
+  if (dom.heroYearSuffix) dom.heroYearSuffix.textContent = 'UPLOADED IMAGE · METRIC DEPTH';
+  if (dom.heroEraName) dom.heroEraName.textContent = pending.name;
+  if (dom.heroEraProvenance) dom.heroEraProvenance.textContent = 'Metric depth recovered from your image. Architectural authoring and critic verification have not completed.';
+  if (dom.splitCompareOverlay) dom.splitCompareOverlay.style.display = 'none';
+  if (dom.toggleSplitSlider) dom.toggleSplitSlider.checked = false;
+  renderer.render(scene,camera);
+}
+async function reconstructUploadedImage() {
+  if (state.isInitializing) {
+    setLiveImageStatus('The cloud workbench is starting. Your selected image is retained; reconstruct it when startup finishes.', 'reading');
+    return false;
+  }
+  const pending = state.pendingUpload;
+  if (!pending?.image) {setLiveImageStatus('Choose a valid image before reconstructing.', 'error');return false;}
+  if (state.isGeneratingHistory || state.isReturnWarpActive) return false;
+  const sourceBefore = Object.fromEntries(SOURCE_STATE_KEYS.map(key=>[key,state[key]]));
+  pending.returnSelection = currentHistorySelection() || pending.returnSelection;
+  let depthReady = false;
+  state.isReconstructingImage = true;
+  setHistoryGenerationBusy(true);
+  closeAllPopovers();hideApiError();
+  try {
+    setLiveImageStatus('Checking cloud reconstruction services…', 'busy');
+    const [vertex,depth] = await Promise.all([readLiveServiceStatus('/api/status'),readLiveServiceStatus('/api/depth-status')]);
+    if (depth.available && depth.depthAvailable === false) throw new Error(depth.message || 'The AI3D depth service is not running. Start it in the cloud before reconstructing.');
+    await loadPhotoFromDataUrl(pending.dataUrl);
+    state.samplePath = `upload:${pending.name}`;
+    pending.phase = 'grounding';
+    setLiveImageStatus(depth.apiKeyConfigured === false ? '1/4 · Recovering metric depth. Checking for an existing result; a key is required for a new live request.' : '1/4 · Recovering metric depth from your image…', 'busy');
+    await step1GroundWithMogeAnd2DPlan();
+    depthReady = true;pending.phase = 'depth-ready';
+    uploadedDepthPreview(pending);
+    if (!vertex.available || !vertex.liveGenerationAvailable) {
+      const message = 'Depth ready; Vertex credentials are required to generate architecture and run the critic. No reconstructed history has been created.';
+      pending.phase = 'blocked';setLiveImageStatus(message,'blocked');setStatus('busy','Depth ready · Vertex required for architecture');
+      return {ok:false,depthReady:true,blocker:'credentials',phase:'depth-ready'};
+    }
+    pending.phase = 'authoring';setLiveImageStatus('2/4 · Generating architecture from the uploaded image…', 'busy');
+    await step2AuthorRound1World();
+    pending.phase = 'critic';setLiveImageStatus('3/4 · Checking the generated world from four views…', 'busy');
+    await step3RunAdversarialCritic();
+    pending.phase = 'rewrite';setLiveImageStatus('4/4 · Applying critic corrections and exporting the reconstructed world…', 'busy');
+    await step4RewriteAndRerenderRound2({internal:true});
+    const rootId = state.activeBranchKey;
+    state.pendingUpload = null;
+    if (dom.liveImagePanel) dom.liveImagePanel.hidden = true;
+    if (dom.activeSceneTitle) dom.activeSceneTitle.textContent = pending.name;
+    setStatus('ok', state.critiqueR2 ? 'Uploaded image reconstructed · critic results available' : 'Uploaded image world generated · final critic unavailable');
+    showToast('Your reconstructed world is ready. Earlier histories are preserved.',5000);
+    return {ok:true,rootId,depthReady:true,criticAvailable:Boolean(state.critiqueR2)};
+  } catch (error) {
+    pending.phase = 'error';
+    if (!depthReady) {
+      Object.assign(state,sourceBefore);
+      if (dom.splitOriginalImg) dom.splitOriginalImg.src = state.photoDataUrl || '';
+    }
+    const message = depthReady ? `Depth recovered; reconstruction stopped: ${error.message}` : `Image reconstruction could not start: ${error.message}`;
+    setLiveImageStatus(message,'error');showApiError(message);
+    return {ok:false,depthReady,phase:depthReady?'generation-failed':'depth-failed',message};
+  } finally {
+    state.isReconstructingImage = false;
+    setHistoryGenerationBusy(false);
+    if (state.pendingUpload && dom.btnReconstructImage) dom.btnReconstructImage.disabled = !state.pendingUpload.image;
+    if (dom.btnCancelImage) dom.btnCancelImage.disabled = false;
+  }
+}
+async function cancelUploadedImage() {
+  if (state.isReconstructingImage || state.isGeneratingHistory) return false;
+  const pending = state.pendingUpload;
+  state.pendingUpload = null;++uploadSelectionVersion;
+  if (dom.liveImagePanel) dom.liveImagePanel.hidden = true;
+  if (dom.uploadedImagePreview) {dom.uploadedImagePreview.removeAttribute('src');dom.uploadedImagePreview.hidden = true;}
+  if (pending?.returnSelection && state.activeBranchKey === null) {
+    return syncWorldToYear(pending.returnSelection.year,pending.returnSelection.branchId);
+  }
+  return true;
 }

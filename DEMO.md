@@ -25,3 +25,9 @@ The main workbench has a **3-minute demo** button. It runs a curated procedural 
 - No GPU is exposed. PyTorch CUDA availability is false. Official GPU-enabled Codex Cloud offering support could not be verified from reachable documentation; no GPU offering is assumed.
 
 See [API_REQUIREMENTS.md](API_REQUIREMENTS.md) for exact external contracts, secure settings, and the real depth smoke command. See [HARDWARE.md](HARDWARE.md) for hardware/CPU-kernel evidence. The app remains unmerged; no live inference, critic result, or publication is claimed without a successful check.
+
+## Live image intake
+
+Use **Upload image** next to the TIME TRAVEL title, outside Developer Mode. JPEG, PNG, and WebP files receive a local preview; paid inference starts only after **Reconstruct image**. The live split is AI3D MoGe-2 depth → Vertex/Gemini authoring/critique → cloud CPU Blender. The uploaded source stays separate from the displayed history until reconstruction starts, and cancel/failure preserves prior histories. Larger source contexts use browser IndexedDB when needed. Missing live credentials are reported without substituting the illustrative world as a reconstruction.
+
+Runtime upload tests exercise the actual native file chooser on desktop/mobile, submit the exact selected bytes to the real depth endpoint, and check the current missing-key error, no fake history, retained prior geometry, and cancel/reload behavior. Separate upload orchestration tests use explicitly mocked service responses to cover depth-only and full successful pipeline paths; they do not establish live model inference.

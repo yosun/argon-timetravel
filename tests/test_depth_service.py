@@ -110,6 +110,77 @@ class MockedAI3DContractTests(unittest.TestCase):
                 depth.run_moge2_remote_job(b'fixture', 'missing')
 
 
+class UploadImageTypeTests(unittest.TestCase):
+    def image_data_url(self, image_format, mime_type):
+        stream = io.BytesIO()
+        depth.Image.new("RGB", (4, 3), (70, 90, 110)).save(stream, format=image_format)
+        image_bytes = stream.getvalue()
+        return f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}", image_bytes
+
+    def test_png_and_webp_keep_their_multipart_type_and_extension(self):
+        """Real image containers, mocked AI3D transport: no remote inference runs."""
+        for image_format, mime_type, extension in (("PNG", "image/png", "png"), ("WEBP", "image/webp", "webp")):
+            with self.subTest(mime_type=mime_type), tempfile.TemporaryDirectory() as temporary:
+                data_url, original_bytes = self.image_data_url(image_format, mime_type)
+                image_bytes, decoded_mime = depth.decode_image_input(data_url)
+                self.assertEqual(image_bytes, original_bytes)
+                self.assertEqual(decoded_mime, mime_type)
+                requests = []
+                def fake_api(request, timeout):
+                    requests.append(request)
+                    if request.full_url.endswith('/uploads'):
+                        payload = {'image_url': 'https://files.example.org/photo.' + extension}
+                    else:
+                        payload = {'id': 'image-type-job', 'status': 'succeeded', 'artifacts': [
+                            {'name': name, 'download_url': 'https://files.example.org/' + name}
+                            for name in ('points.exr', 'depth.exr', 'image.png')
+                        ]}
+                    return io.BytesIO(json.dumps(payload).encode())
+                with mock.patch.object(depth, 'CACHE_DIR', Path(temporary)), \
+                     mock.patch.object(depth, 'AI3D_API_KEY', 'dummy-test-key'), \
+                     mock.patch.object(depth.urllib.request, 'urlopen', side_effect=fake_api), \
+                     mock.patch.object(depth._ARTIFACT_OPENER, 'open', side_effect=lambda request, timeout: io.BytesIO(b'fixture')):
+                    depth.run_moge2_remote_job(image_bytes, 'image-type-' + extension, mime_type=decoded_mime)
+                upload_body = requests[0].data
+                self.assertIn(f'filename="photo.{extension}"'.encode(), upload_body)
+                self.assertIn(f'Content-Type: {mime_type}\r\n\r\n'.encode(), upload_body)
+                self.assertIn(original_bytes, upload_body)
+                self.assertNotIn(b'Content-Type: image/jpeg', upload_body)
+
+    def test_http_handler_passes_the_data_url_mime_to_remote_job(self):
+        for image_format, mime_type in (("PNG", "image/png"), ("WEBP", "image/webp")):
+            with self.subTest(mime_type=mime_type), tempfile.TemporaryDirectory() as temporary:
+                data_url, image_bytes = self.image_data_url(image_format, mime_type)
+                encoded_body = json.dumps({'imageBase64': data_url}).encode()
+                handler = object.__new__(depth.MoGe2GeometryHandler)
+                handler.path = '/estimate-depth'
+                handler.headers = {'Content-Length': str(len(encoded_body))}
+                handler.rfile = io.BytesIO(encoded_body)
+                handler._send_json = mock.Mock()
+                with mock.patch.object(depth, 'CACHE_DIR', Path(temporary)), \
+                     mock.patch.object(depth, 'run_moge2_remote_job', return_value=Path(temporary)) as run_job, \
+                     mock.patch.object(depth, 'parse_moge2_artifacts', return_value={'pointsGrid': []}):
+                    handler.do_POST()
+                run_job.assert_called_once_with(image_bytes, depth.hashlib.sha256(image_bytes).hexdigest(), mime_type=mime_type)
+                self.assertEqual(handler._send_json.call_args.args[0], 200)
+
+    def test_legacy_raw_base64_defaults_to_jpeg(self):
+        image_bytes = b'legacy-jpeg-fixture'
+        self.assertEqual(depth.decode_image_input(base64.b64encode(image_bytes).decode()), (image_bytes, 'image/jpeg'))
+
+    def test_unsupported_types_and_invalid_base64_fail_before_remote_request(self):
+        with mock.patch.object(depth.urllib.request, 'urlopen') as transport:
+            for data_url in ('data:image/svg+xml;base64,PHN2Zy8+',
+                             'data:image/gif;base64,R0lGODlh',
+                             'data:image/png,not-base64', 'data:image/png;base64,!!',
+                             'data:image/png;base64,'):
+                with self.subTest(data_url=data_url), self.assertRaises(ValueError):
+                    depth.decode_image_input(data_url)
+            with self.assertRaisesRegex(ValueError, 'Supported upload types'):
+                depth.run_moge2_remote_job(b'fixture', 'unsupported', mime_type='image/gif')
+            transport.assert_not_called()
+
+
 class SyntheticEXRParserTests(unittest.TestCase):
     def test_finite_exr_geometry_is_converted_to_three_coordinate_grid(self):
         """Actual OpenCV EXR round-trip using analytic synthetic camera geometry."""

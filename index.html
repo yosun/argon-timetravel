@@ -48,6 +48,7 @@
   <header class="top-chrome">
     <div class="brand-capsule">
       <div class="brand-title">TIME TRAVEL <span class="sep">/</span></div>
+      <button id="btnUploadImage" class="upload-launch" title="Upload a photograph for live 3D reconstruction">↥ Upload image</button>
       <button id="btnThreeMinuteDemo" class="demo-launch" title="Run a real CPU Blender branching demo; no AI credentials needed">▶ 3-minute demo</button>
       <div class="brand-scene-tag" id="activeSceneTitle">The Cloisters · Romanesque Courtyard</div>
     </div>
@@ -76,6 +77,21 @@
       </button>
     </div>
   </header>
+
+  <input type="file" id="photoInput" accept="image/jpeg,image/png,image/webp" hidden aria-label="Choose a photograph to reconstruct" />
+  <section id="liveImagePanel" class="live-image-panel" hidden aria-label="Uploaded image reconstruction">
+    <div class="live-image-heading"><span>YOUR PHOTOGRAPH</span><strong id="uploadedImageName"></strong></div>
+    <div class="live-image-reference">
+      <img id="uploadedImagePreview" alt="Uploaded reference photograph" />
+      <div><p>Turn your photograph into a navigable 3D world.</p><p class="live-image-services">Depth by AI3D · Scene authoring and review by Vertex/Gemini</p></div>
+    </div>
+    <p id="liveImageStatus" class="live-image-status" role="status" aria-live="polite">Choose an image to begin.</p>
+    <div class="live-image-actions">
+      <button id="btnReconstructImage" class="upload-launch">Reconstruct image</button>
+      <button id="btnCancelImage" class="glass-pill-btn">Cancel</button>
+    </div>
+    <small>JPG, PNG or WebP · up to 12 MB. Selecting an image stays in your browser. Reconstruction sends it to the configured AI services.</small>
+  </section>
 
   <!-- ========================================================================
        3. PROMINENT CURRENT YEAR & HISTORICAL ERA OVERLAY
@@ -364,10 +380,7 @@
               </select>
             </div>
 
-            <label class="btn-dev" style="cursor:pointer;">
-              <span>Upload Photo</span>
-              <input type="file" id="photoInput" accept="image/*" style="display:none;" />
-            </label>
+            <label for="photoInput" class="btn-dev" style="cursor:pointer;">Upload image</label>
 
             <div style="display:flex;align-items:center;gap:6px;">
               <label for="thinkingLevelSelect" style="color:var(--text-secondary);font-size:11px;">Thinking:</label>
@@ -604,6 +617,7 @@
   <!-- Main JavaScript Controller -->
   <script src="history.js"></script>
   <script src="world-navigation.js"></script>
+  <script src="history-storage.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

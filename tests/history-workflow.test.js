@@ -113,3 +113,17 @@ test('generation refuses concurrent actions and failed destination retains causa
  assert.equal(a.run('dom.btnBranchA.disabled'),false);
  assert.equal(a.run('dom.btnStep1Ground.disabled'),true);
 });
+
+test('unrestored history records cannot be overwritten by later session saves',async()=>{
+ const a=app();const original=JSON.stringify({branches:{older:{id:'older'}},contexts:{},contextStorage:'indexeddb'});
+ a.storage.set('timetravel.histories.v2',original);
+ a.context.HistoryStorage={create:()=>({load:async()=>{throw new Error('IndexedDB unavailable');}})};
+ a.context.document={getElementById:()=>null};
+ a.context.fetch=async()=>new Response(JSON.stringify({provenance:'demo',eras:[{year:2026,blenderGlbUrl:'/demo.glb'}]}));
+ a.run(`syncWorldToYear=async()=>true;`);
+ await a.run('loadDemoHistory()');
+ assert.equal(a.run('state.historyPersistenceBlocked'),true);
+ a.run(`state.branches.newer={id:'newer',eras:[]};`);
+ assert.equal(await a.run('persistHistories()'),false);
+ assert.equal(a.storage.get('timetravel.histories.v2'),original);
+});

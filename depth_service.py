@@ -23,6 +23,7 @@ CACHE_DIR = BASE_DIR / ".cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 ENV_FILE = BASE_DIR / ".env"
 AI3D_BASE_URL = "https://api.ai3d.dev/v2"
+UPLOAD_IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 
 
 def load_ai3d_api_key() -> str:
@@ -92,12 +93,35 @@ class ArtifactRedirectHandler(urllib.request.HTTPRedirectHandler):
 _ARTIFACT_OPENER = urllib.request.build_opener(ArtifactRedirectHandler())
 
 
-def run_moge2_remote_job(img_bytes: bytes, sha256_hex: str) -> Path:
+def decode_image_input(image_base64: str):
+    """Keep uploaded JPEG/PNG/WebP types; raw base64 retains the legacy JPEG default."""
+    if not isinstance(image_base64, str):
+        raise ValueError("imageBase64 must contain a base64 image string")
+    mime_type = "image/jpeg"
+    encoded = image_base64
+    if image_base64.startswith("data:"):
+        match = re.fullmatch(r"data:([^;,]+);base64,(.*)", image_base64, flags=re.DOTALL)
+        if match is None:
+            raise ValueError("Image data URL must contain base64 JPEG, PNG, or WebP")
+        mime_type, encoded = match.groups()
+        mime_type = mime_type.lower()
+    if mime_type not in UPLOAD_IMAGE_TYPES:
+        raise ValueError("Supported upload types are image/jpeg, image/png, and image/webp")
+    image_bytes = base64.b64decode(encoded, validate=True)
+    if not image_bytes:
+        raise ValueError("Uploaded image is empty")
+    return image_bytes, mime_type
+
+
+def run_moge2_remote_job(img_bytes: bytes, sha256_hex: str, mime_type: str = "image/jpeg") -> Path:
     """
     Calls https://api.ai3d.dev/v2/uploads and https://api.ai3d.dev/v2/jobs with model='moge2'
     and downloads depth.exr, points.exr, image.png (depth), image-01.png (normal), mask.png, mesh.glb.
     Caches in .cache/moge_<sha256>/.
     """
+    if mime_type not in UPLOAD_IMAGE_TYPES:
+        raise ValueError("Supported upload types are image/jpeg, image/png, and image/webp")
+    extension = UPLOAD_IMAGE_TYPES[mime_type]
     job_dir = CACHE_DIR / f"moge_{sha256_hex}"
     if (job_dir / "points.exr").exists() and (job_dir / "depth.exr").exists() and (job_dir / "image.png").exists():
         print(f"[MoGe2Service] Cache hit for {sha256_hex[:12]}")
@@ -112,8 +136,8 @@ def run_moge2_remote_job(img_bytes: bytes, sha256_hex: str) -> Path:
     boundary = f"MoGeBoundary{int(time.time() * 1000)}"
     body = (
         f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="image"; filename="photo.jpg"\r\n'
-        f"Content-Type: image/jpeg\r\n\r\n"
+        f'Content-Disposition: form-data; name="image"; filename="photo.{extension}"\r\n'
+        f"Content-Type: {mime_type}\r\n\r\n"
     ).encode("utf-8") + img_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
 
     req_up = urllib.request.Request(
@@ -340,18 +364,15 @@ class MoGe2GeometryHandler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length)
             body = json.loads(raw.decode("utf-8"))
 
-            img_b64 = body.get("imageBase64", "")
-            if "," in img_b64:
-                img_b64 = img_b64.split(",", 1)[1]
+            img_bytes, mime_type = decode_image_input(body.get("imageBase64", ""))
 
             grid_w = int(body.get("gridWidth", 192))
             grid_h = int(body.get("gridHeight", 168))
 
-            img_bytes = base64.b64decode(img_b64)
             sha256_hex = hashlib.sha256(img_bytes).hexdigest()
 
             was_cached = (CACHE_DIR / f"moge_{sha256_hex}" / "points.exr").exists()
-            job_dir = run_moge2_remote_job(img_bytes, sha256_hex)
+            job_dir = run_moge2_remote_job(img_bytes, sha256_hex, mime_type=mime_type)
             parsed = parse_moge2_artifacts(job_dir, grid_w=grid_w, grid_h=grid_h)
 
             latency_ms = int(round((time.time() - t0) * 1000))

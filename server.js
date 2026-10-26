@@ -8,7 +8,7 @@ const { planFork } = require('./demo-worlds');
 const { execSync, exec } = require('child_process');
 
 const PORT = process.env.PORT || 3456;
-const DEPTH_SERVICE_PORT = 3457;
+const DEPTH_SERVICE_PORT = Number(process.env.DEPTH_SERVICE_PORT || 3457);
 const MODEL_ID = 'gemini-4-argon';
 const CACHE_DIR = path.join(__dirname, '.cache');
 const SAMPLES_DIR = path.join(__dirname, 'samples');
@@ -644,6 +644,28 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {ok:true,latencyMs:Date.now()-started,causalSimulation:{...simulation,eras}});
     } catch (err) {
       return sendJson(res,err.status||500,{ok:false,exactApiError:{message:err.message}});
+    }
+  }
+
+  if (req.method === 'GET' && pathname === '/api/depth-status') {
+    try {
+      const health = await new Promise((resolve, reject) => {
+        const request = http.get({hostname:'127.0.0.1',port:DEPTH_SERVICE_PORT,path:'/health',timeout:5000}, response => {
+          const chunks=[];
+          response.on('data',chunk=>chunks.push(chunk));
+          response.on('end',()=>{
+            try {
+              if (response.statusCode !== 200) throw new Error('Depth service health check failed');
+              resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+            } catch (error) { reject(error); }
+          });
+        });
+        request.on('timeout',()=>request.destroy(new Error('Depth service health check timed out')));
+        request.on('error',reject);
+      });
+      return sendJson(res,200,{ok:true,depthAvailable:Boolean(health.ok),apiKeyConfigured:Boolean(health.apiKeyConfigured),provider:'AI3D',model:'moge2'});
+    } catch (_) {
+      return sendJson(res,200,{ok:true,depthAvailable:false,apiKeyConfigured:false,provider:'AI3D',model:'moge2',message:'The AI3D depth service is not running. Start npm run depth-service in the cloud.'});
     }
   }
 

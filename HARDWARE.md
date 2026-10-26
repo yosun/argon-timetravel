@@ -37,13 +37,13 @@ The official [cloud environment documentation](https://developers.openai.com/cod
 
 ## Smallest external GPU dependency
 
-A GPU is not required for the Node web application, causal-history storage and navigation, Three.js world loading, or Blender geometry generation and GLB export. If measured MoGe-2 CPU inference cannot meet the demo latency or memory budget, offload only the single-image depth-estimation operation:
+The deployment architecture already isolates learned depth inference at AI3D MoGe-2. A GPU is not required for the Node web application, causal-history storage and navigation, Three.js world loading, or cloud CPU Blender geometry generation and GLB export. The smallest external GPU boundary is only the single-image depth-estimation operation:
 
 1. Send one uploaded image to an authenticated MoGe-2 inference endpoint.
 2. Return the metric points/depth, mask, normals, and camera calibration in the depth-service response contract, or return the corresponding EXR/image artifacts for the existing adapter.
 3. Keep every other component and all application state in this cloud environment; retain inference artifacts to avoid repeated calls for the same image.
 
-The existing `depth_service.py` adapter already isolates this boundary through `api.ai3d.dev/v2`; it needs a securely configured `AI3D_API_KEY`. Any alternate GPU endpoint must implement the same outputs and be explicitly authenticated. No GPU capacity, vendor memory minimum, performance guarantee, or successful authenticated remote inference is claimed here. CPU feasibility should be decided from the MoGe benchmark result, separately from these hardware facts. Vertex/Gemini authoring also has a separate credential requirement; supplying GPU hardware would not fix missing authentication.
+The `depth_service.py` adapter implements this boundary through `api.ai3d.dev/v2` and requires a securely configured `AI3D_API_KEY`. MoGe-2 remains on AI3D; local CPU inference is not an application backend. Vertex/Gemini handles scene source authoring and independent critique, with its own identity/project/model-access requirement. Blender executes that source on the cloud CPU. No vendor GPU capacity, memory minimum, performance guarantee, or successful authenticated remote inference is claimed here. Supplying local GPU hardware would not resolve missing API credentials.
 
 ## CPU investigation evidence; application remains on AI3D
 

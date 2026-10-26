@@ -29,11 +29,15 @@ For browser validation, install Playwright in a temporary tools directory (no ap
 npm_config_cache=/tmp/npm-cache npm install --prefix /tmp/browser-tools playwright@1.64.1
 NODE_PATH=/tmp/browser-tools/node_modules node tests/browser-smoke.cjs
 NODE_PATH=/tmp/browser-tools/node_modules node tests/browser-demo.cjs
+NODE_PATH=/tmp/browser-tools/node_modules node tests/browser-upload.cjs
 ```
 
 The browser check uses /usr/bin/chromium and cloud-internal HTTP. It verifies actual WebGL startup, intermediate-year selection, rapid navigation, and browser history persistence. It calls the real CPU Blender demo endpoint, verifies geometry names and source inheritance through nested histories, reloads a saved history, and checks failed-asset retention. No generation or depth response is mocked in this browser run; the procedural demo does not call AI3D or Vertex. It writes /tmp/cloud-workbench-verified.png. Set TEST_BASE_URL to target another cloud-internal server port. Separate Node workflow tests mock model responses explicitly; backend HTTP tests seed AI plan fixtures but execute real Blender.
 
-## Live service prerequisites
+## Live reconstruction architecture and prerequisites
+
+The live pipeline is fixed: **AI3D MoGe-2 supplies photograph depth/calibration; Vertex/Gemini authors, critiques, and repairs scene source; cloud CPU Blender generates geometry and exports GLB worlds.** No Mac process, local model backend, or external Blender worker is needed.
+
 
 Live depth requires AI3D_API_KEY securely supplied to the depth process. Live AI geometry generation currently requires the gcloud CLI, authenticated Vertex access, and GOOGLE_CLOUD_PROJECT (or a gcloud project configuration). The existing ADC binding was checked with google-auth and is unusable; it does not supply credentials or a project. The existing implementation does not support GEMINI_API_KEY or a service-account path automatically, despite HANDOFF.md suggesting otherwise. Do not enter secret values in chat or commit them. The model name and access must be verified with a real authorized request before claiming live generation works.
 
@@ -41,7 +45,7 @@ The current cloud host has neither gcloud authentication nor AI3D_API_KEY. /api/
 
 ## History semantics
 
-Each intervention appends a unique immutable node with parentId and forkYear. States earlier than the fork are inherited from the parent; generated post-fork states replace only the descendant's future. Siblings remain independently navigable in the history panel. A scrubbed date displays the latest preceding available epoch (the earliest available epoch before the first), with no claim that intervening geometry was simulated. Histories and deduplicated source photographs/calibration persist in browser local storage; reconstruction roots save immediately. This is not server-side multi-user persistence. Generation inputs include the selected parent epoch's source when available, and causal caches include the full image hash, source hash, and metric configuration.
+Each intervention appends a unique immutable node with parentId and forkYear. States earlier than the fork are inherited from the parent; generated post-fork states replace only the descendant's future. Siblings remain independently navigable in the history panel. A scrubbed date displays the latest preceding available epoch (the earliest available epoch before the first), with no claim that intervening geometry was simulated. Histories and deduplicated source photographs/calibration persist in browser storage; large source contexts fall back to IndexedDB when local storage fills, and reconstruction roots save immediately. A failed restoration cannot overwrite older saved records. This is not server-side multi-user persistence. Generation inputs include the selected parent epoch's source when available, and causal caches include the full image hash, source hash, and metric configuration.
 
 Existing MVP1 and MVP2 pages remain available. Live AI authoring, full critic/rewrite acceptance, and legacy credential-dependent workflows remain unrun in this cloud host. This change does not establish their handoff claims.
 
@@ -49,4 +53,10 @@ Existing MVP1 and MVP2 pages remain available. Live AI authoring, full critic/re
 
 Click **3-minute demo** in the top bar to generate a 1206 fountain canopy and a nested 1566 astrolabe history on CPU. These are real Blender mesh/GLB exports driven by curated procedural rules, not model-generated reconstructions. Select any saved history to compare its parent and descendants. Canonical eras and exact fork dates remain separately navigable; no previous branch is overwritten. Supported procedural interventions are canopy/fountain, astrolabe/sundial, and garden; arbitrary natural-language synthesis uses the separate live AI workflow.
 
-MoGe-2 remains exclusively on the AI3D API as requested. The intended external GPU boundary is only the photograph-to-depth/points operation. AI3D needs the secure AI3D_API_KEY binding and api.ai3d.dev network access; returned artifact hosts may need additional egress after their actual URLs are known. No application migration or local GPU is required. See HARDWARE.md for measured CPU/CUDA evidence and the limits of GPU product-support verification.
+MoGe-2 remains exclusively on the AI3D API as requested. The external GPU boundary is the AI3D photograph-to-depth/points operation. AI3D needs the secure AI3D_API_KEY binding and api.ai3d.dev network access; returned artifact hosts may need additional egress after their actual URLs are known. No application migration or local GPU is required. See HARDWARE.md for measured CPU/CUDA evidence and the limits of GPU product-support verification.
+
+## Uploaded photograph workflow
+
+Use **Upload image** in the top toolbar to select and preview a photograph. Selection does not automatically send paid inference requests. Press **Reconstruct image** to run real AI3D MoGe-2 depth, Vertex/Gemini authoring and rendered-view critique/repair, then CPU Blender export. This is separate from the curated procedural demo.
+
+Existing histories are retained when selecting another image. A completed reconstruction saves its own source photograph and metric context for later interventions. Missing AI3D credentials/network access or Vertex identity/project/model permission should be reported for that precise service. A healthy process or available procedural demo does not establish that live reconstruction works. See [API_REQUIREMENTS.md](API_REQUIREMENTS.md) for secure setup and the real depth smoke check.
