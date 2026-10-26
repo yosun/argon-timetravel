@@ -44,7 +44,7 @@ This submits the committed cloister photograph through the real application endp
 
 These are external API operations and need no GPU on the Codex host. The adapter uses Vertex with the configured model ID `gemini-4-argon` through `gcloud auth print-access-token`. Configure an authenticated cloud identity, `GOOGLE_CLOUD_PROJECT` (or a gcloud project configuration), and permission to invoke that exact model. Confirm that the model exists and is available to the identity before claiming readiness.
 
-The recorded cloud check found no usable Vertex identity/project; the available ADC binding was also unusable. This is a credentials/access blocker, not a GPU limitation. The current adapter does not automatically use `GEMINI_API_KEY` or a service-account file path. Merely setting those variables does not activate the integration.
+The project is now configured, but the recorded cloud check found no usable Vertex identity; the available ADC binding is unusable and gcloud is absent. This is a credentials/access blocker, not a GPU limitation. The current adapter does not automatically use `GEMINI_API_KEY` or a service-account file path. Merely setting those variables does not activate the integration.
 
 Authoring consumes reference images, metric landmarks/intrinsics, and, when relevant, parent Blender source, intervention/fork date, and prior critique. It returns complete Blender Python source as structured JSON. The critic consumes actual rendered viewpoints and reports explicit scores and deficiencies. Those model calls must complete before any claim of independently assessed reconstruction quality.
 
@@ -58,4 +58,4 @@ CPU compilation/export and error handling have been exercised with real Blender.
 
 ## Evidence boundary
 
-The three-minute procedural CPU demo has recorded real generation and browser verification. Live photograph reconstruction remains blocked until AI3D credentials/network and Vertex identity/project/model access work. No authenticated live inference or critic score is established by mocked tests or illustrative assets. The smallest external GPU boundary is the existing AI3D single-image MoGe-2 job; moving the application or Blender to a GPU host is unnecessary.
+The three-minute procedural CPU demo has recorded real generation and browser verification. Authenticated AI3D depth inference is now verified: the first uncached job took 29.7 seconds, and the live browser displayed the actual metric-depth mesh. Architectural source generation and critique remain blocked by Vertex authentication/model access. No authenticated live inference or critic score is established by mocked tests or illustrative assets. The smallest external GPU boundary is the existing AI3D single-image MoGe-2 job; moving the application or Blender to a GPU host is unnecessary.

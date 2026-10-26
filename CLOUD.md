@@ -41,7 +41,7 @@ The live pipeline is fixed: **AI3D MoGe-2 supplies photograph depth/calibration;
 
 Live depth requires AI3D_API_KEY securely supplied to the depth process. Live AI geometry generation currently requires the gcloud CLI, authenticated Vertex access, and GOOGLE_CLOUD_PROJECT (or a gcloud project configuration). The existing ADC binding was checked with google-auth and is unusable; it does not supply credentials or a project. The existing implementation does not support GEMINI_API_KEY or a service-account path automatically, despite HANDOFF.md suggesting otherwise. Do not enter secret values in chat or commit them. The model name and access must be verified with a real authorized request before claiming live generation works.
 
-The current cloud host has neither gcloud authentication nor AI3D_API_KEY. /api/status reports liveGenerationAvailable:false while the illustrative browser workflow remains available. /health reports apiKeyConfigured:false. The handoff's 71→92 scores were not independently reproduced; the user-reported 4.2→8.6 records were not available in this checkout either.
+After environment publication, AI3D_API_KEY is securely bound and a real uncached MoGe-2 request completed in 29.7 seconds. The live upload UI also displayed the cached metric-depth result as a textured 3D mesh. GOOGLE_CLOUD_PROJECT is configured, but Vertex authentication is still unavailable, so /api/status reports liveGenerationAvailable:false. /health reports apiKeyConfigured:true. The handoff's 71→92 scores were not independently reproduced; the user-reported 4.2→8.6 records were not available in this checkout either.
 
 ## History semantics
 
@@ -60,3 +60,11 @@ MoGe-2 remains exclusively on the AI3D API as requested. The external GPU bounda
 Use **Upload image** in the top toolbar to select and preview a photograph. Selection does not automatically send paid inference requests. Press **Reconstruct image** to run real AI3D MoGe-2 depth, Vertex/Gemini authoring and rendered-view critique/repair, then CPU Blender export. This is separate from the curated procedural demo.
 
 Existing histories are retained when selecting another image. A completed reconstruction saves its own source photograph and metric context for later interventions. Missing AI3D credentials/network access or Vertex identity/project/model permission should be reported for that precise service. A healthy process or available procedural demo does not establish that live reconstruction works. See [API_REQUIREMENTS.md](API_REQUIREMENTS.md) for secure setup and the real depth smoke check.
+
+## Latest live AI3D verification
+
+The first authenticated, uncached cloister job returned a 192×168 metric grid, 98.79° vertical FOV and a mesh GLB in 29.7 seconds. Artifacts use HTTPS on api.ai3d.dev. No additional artifact host was required.
+
+`NODE_PATH=/tmp/browser-tools/node_modules node tests/browser-live-depth.cjs` checks the actual upload/reconstruct flow against those cached artifacts. It refuses to run without the existing cache, preventing accidental new paid jobs. The browser displayed a real textured depth mesh (32,256 vertices and 63,794 triangles), explicitly stopped before Vertex authoring, and restored the original history on cancel. The separate browser-upload missing-credentials case now uses explicitly labeled error fixtures and never sends its dining-room image to a paid service.
+
+The depth HTTP server handles health requests concurrently with long inference. Identical concurrent image requests share one AI3D job/result/failure, preventing duplicate submissions. No live Vertex source generation or independent critic result is claimed.

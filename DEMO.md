@@ -31,3 +31,9 @@ See [API_REQUIREMENTS.md](API_REQUIREMENTS.md) for exact external contracts, sec
 Use **Upload image** next to the TIME TRAVEL title, outside Developer Mode. JPEG, PNG, and WebP files receive a local preview; paid inference starts only after **Reconstruct image**. The live split is AI3D MoGe-2 depth → Vertex/Gemini authoring/critique → cloud CPU Blender. The uploaded source stays separate from the displayed history until reconstruction starts, and cancel/failure preserves prior histories. Larger source contexts use browser IndexedDB when needed. Missing live credentials are reported without substituting the illustrative world as a reconstruction.
 
 Runtime upload tests exercise the actual native file chooser on desktop/mobile, submit the exact selected bytes to the real depth endpoint, and check the current missing-key error, no fake history, retained prior geometry, and cancel/reload behavior. Separate upload orchestration tests use explicitly mocked service responses to cover depth-only and full successful pipeline paths; they do not establish live model inference.
+
+## Live depth demo now verified
+
+AI3D key publication succeeded. The first uncached MoGe-2 job completed in **29.7 seconds**, returning metric points/depth, 98.79° camera FOV, and a GLB. Uploading the cloister image and clicking **Reconstruct image** now displays its real textured metric-depth mesh. Vertex authentication is still missing, so the UI explicitly reports depth readiness without claiming architectural authoring or critique. Cancel restores the original world.
+
+Run `tests/browser-live-depth.cjs` with the documented Playwright/NODE_PATH setup to verify that real flow using existing cached artifacts only. This browser check refuses to submit a new paid job if the expected cache is absent. The generic upload error-path test uses labeled missing-key fixtures now that live credentials are configured.

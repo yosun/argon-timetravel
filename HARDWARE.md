@@ -59,3 +59,7 @@ Before that decision, the official [Microsoft MoGe source](https://github.com/mi
 All output tensors were finite. These results establish that the v2 kernels can run within this host's CPU and memory limits. **They do not verify pretrained inference, focal recovery, reconstruction accuracy, or learned-model end-to-end latency.** The public smallest official MoGe-2 checkpoint is listed as 35M total parameters; it is distinct from the 330.9M-parameter configuration benchmarked here. An actual pretrained checkpoint request failed with `ProxyError: 403 Forbidden` before download. No untrained outputs are used by the demo. Raw benchmark evidence remains under `/tmp/moge-architecture-cpu*.json` in this machine.
 
 AI3D remains the intended isolated inference service; the cloud app and Blender export remain on CPU. At investigation time `AI3D_API_KEY` was absent from the process and supported local credential files, and the unauthenticated API destination was blocked by the egress proxy. These are configuration/access prerequisites, not local GPU limitations.
+
+## Live external inference verified
+
+After publication activated the secure AI3D binding, the existing MoGe-2 adapter completed a real uncached job in 29.7 seconds with a 192×168 metric grid, 98.79° vertical FOV, and mesh GLB. The browser's actual upload flow displayed the corresponding textured depth mesh from cached artifacts. This validates the intended external inference boundary without GPU hardware in Codex Cloud. Vertex authentication remains separate and is not yet usable.

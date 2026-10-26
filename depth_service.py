@@ -7,9 +7,11 @@ import math
 import os
 import re
 import time
+import threading
+from concurrent.futures import Future
 import urllib.request
 from urllib.parse import urlsplit
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
@@ -24,6 +26,8 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 ENV_FILE = BASE_DIR / ".env"
 AI3D_BASE_URL = "https://api.ai3d.dev/v2"
 UPLOAD_IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+_IMAGE_JOB_LOCK = threading.Lock()
+_IMAGE_JOBS = {}
 
 
 def load_ai3d_api_key() -> str:
@@ -114,6 +118,32 @@ def decode_image_input(image_base64: str):
 
 
 def run_moge2_remote_job(img_bytes: bytes, sha256_hex: str, mime_type: str = "image/jpeg") -> Path:
+    """Coalesce concurrent requests for the same image into one remote inference."""
+    if mime_type not in UPLOAD_IMAGE_TYPES:
+        raise ValueError("Supported upload types are image/jpeg, image/png, and image/webp")
+    with _IMAGE_JOB_LOCK:
+        pending = _IMAGE_JOBS.get(sha256_hex)
+        owner = pending is None
+        if owner:
+            pending = Future()
+            _IMAGE_JOBS[sha256_hex] = pending
+    if not owner:
+        # Share both results and failures: a waiting request must not submit a second paid job.
+        return pending.result()
+    try:
+        result = _run_moge2_remote_job(img_bytes, sha256_hex, mime_type)
+        pending.set_result(result)
+        return result
+    except BaseException as error:
+        pending.set_exception(error)
+        raise
+    finally:
+        with _IMAGE_JOB_LOCK:
+            if _IMAGE_JOBS.get(sha256_hex) is pending:
+                del _IMAGE_JOBS[sha256_hex]
+
+
+def _run_moge2_remote_job(img_bytes: bytes, sha256_hex: str, mime_type: str = "image/jpeg") -> Path:
     """
     Calls https://api.ai3d.dev/v2/uploads and https://api.ai3d.dev/v2/jobs with model='moge2'
     and downloads depth.exr, points.exr, image.png (depth), image-01.png (normal), mask.png, mesh.glb.
@@ -396,6 +426,6 @@ class MoGe2GeometryHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = HTTPServer(("127.0.0.1", PORT), MoGe2GeometryHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), MoGe2GeometryHandler)
     print(f"[MoGe2Service] Listening on http://127.0.0.1:{PORT}")
     server.serve_forever()

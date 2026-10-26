@@ -1,5 +1,7 @@
-// Browser upload workflow against real application + real depth error response.
-// No depth, authoring, critic, Blender, or HTTP responses are mocked here.
+// Real browser upload/validation/context/storage checks. ONLY the unavailable-AI3D
+// authentication scenario uses explicit HTTP fixtures for /api/depth-status and
+// /api/depth, preventing this test from submitting a new billable photograph.
+// tests/browser-live-depth.cjs separately verifies the real cached provider result.
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -41,6 +43,16 @@ async function assertWithinViewport(page, selector) {
   });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    // Install before any file selection: a regression that accidentally submits
+    // on selection must fail this test without creating an external paid job.
+    await page.route('**/api/depth-status', route => route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({ok:true,depthAvailable:true,apiKeyConfigured:false,provider:'AI3D',model:'moge2',fixture:'missing-auth'}),
+    }));
+    await page.route('**/api/depth', route => route.fulfill({
+      status:500,contentType:'application/json',
+      body:JSON.stringify({ok:false,message:'AI3D_API_KEY is not configured (explicit authentication-failure test fixture).'}),
+    }));
     const errors = [];
     const posts = [];
     page.on('pageerror', error => errors.push(error.message));
@@ -103,18 +115,19 @@ async function assertWithinViewport(page, selector) {
     await page.screenshot({path:'/tmp/cloud-upload-mobile.png'});
     console.log('PASS upload and reconstruct actions visible in 390px mobile viewport');
 
-    // Invoke the real backend. In the current credential-free cloud runtime this must
-    // fail explicitly at AI3D depth, without creating a fake reconstructed root.
+    // Explicit missing-auth fixture: the UI must show the provider failure, keep
+    // the previous world, and avoid inventing an authored root. This is NOT a live
+    // AI3D inference assertion; the cached live-depth test covers that separately.
     const depthResponsePromise = page.waitForResponse(response => response.url() === base + '/api/depth' && response.request().method() === 'POST', {timeout:30000});
     await page.click('#btnReconstructImage');
     const depthResponse = await depthResponsePromise;
     const depthResult = await depthResponse.json();
-    assert.ok(!depthResponse.ok() || depthResult.ok === false, 'This credential-free check expects a real unavailable-depth error; use a separate live inference test when credentials are present');
-    assert.match(JSON.stringify(depthResult), /AI3D_API_KEY|credential|not configured|unavailable|depth service/i, 'Real depth failure should identify the missing service prerequisite');
+    assert.ok(!depthResponse.ok() || depthResult.ok === false, 'The explicit missing-auth fixture must return an unavailable-depth error');
+    assert.match(JSON.stringify(depthResult), /AI3D_API_KEY|credential|not configured|unavailable|depth service/i, 'The authentication-failure fixture should identify the missing service prerequisite');
     await page.waitForFunction(() => /failed|unavailable|AI3D|credential|not configured|error/i.test(document.getElementById('liveImageStatus').textContent));
     assert.match(await page.locator('#liveImageStatus').textContent(), /failed|unavailable|AI3D|credential|not configured|error/i);
     const depthPosts = posts.slice(firstPosts).filter(request => request.url.endsWith('/api/depth'));
-    assert.equal(depthPosts.length, 1, 'One explicit click should make one real depth request');
+    assert.equal(depthPosts.length, 1, 'One explicit click should make one intercepted depth request');
     const body = JSON.parse(depthPosts[0].body);
     const submittedImage = body.imageDataUrl || body.imageBase64;
     assert.match(submittedImage, /^data:image\/jpeg;base64,/);
@@ -126,9 +139,9 @@ async function assertWithinViewport(page, selector) {
     await page.screenshot({path:'/tmp/cloud-upload-depth-error.png'});
     await page.click('#btnCancelImage');
     await page.waitForFunction(() => !state.pendingUpload && document.getElementById('liveImagePanel').hidden);
-    assert.deepEqual(await snapshot(page), original, 'Cancel after a real depth failure must restore the original demo source/context');
+    assert.deepEqual(await snapshot(page), original, 'Cancel after the authentication-failure fixture must restore the original demo source/context');
     assert.deepEqual(errors, []);
-    console.log('PASS explicit real AI3D depth error, no fake history, retained geometry, cancel restores source; no page errors');
+    console.log('PASS explicit mocked AI3D missing-auth fixture, no fake history, retained real geometry, cancel restores source; no page errors');
 
     // Storage-only fixture: this record deliberately reuses demo geometry. It is
     // NOT a reconstructed world or an inference result. Exercise the real browser

@@ -1,11 +1,14 @@
 """Mocked AI3D transport contracts and synthetic EXR parsing; no live inference."""
 import base64
 import importlib.util
+import http.client
 import io
 import json
 import math
 from pathlib import Path
 import tempfile
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 import unittest
 from unittest import mock
 
@@ -179,6 +182,126 @@ class UploadImageTypeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Supported upload types'):
                 depth.run_moge2_remote_job(b'fixture', 'unsupported', mime_type='image/gif')
             transport.assert_not_called()
+
+
+class ConcurrentDepthRequestTests(unittest.TestCase):
+    def test_health_remains_responsive_and_same_image_uses_one_remote_job(self):
+        """Real local HTTP, mocked slow AI3D inference, actual synthetic EXR parsing."""
+        upload_started = threading.Event()
+        release_upload = threading.Event()
+        duplicate_waiting = threading.Event()
+        api_requests = []
+        request_lock = threading.Lock()
+        class TrackingFuture(Future):
+            def result(self, timeout=None):
+                duplicate_waiting.set()
+                return super().result(timeout=timeout)
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            fixture_dir = folder / 'fixtures'
+            fixture_dir.mkdir()
+            np, cv2 = depth.np, depth.cv2
+            height, width = 16, 12
+            rows, columns = np.indices((height, width), dtype=np.float32)
+            z = np.full((height, width), 4.0, dtype=np.float32)
+            focal_y = height / (2 * math.tan(math.radians(60) / 2))
+            x = (columns + 0.5 - width / 2) * z / focal_y
+            y = (rows + 0.5 - height / 2) * z / focal_y
+            cv2.imwrite(str(fixture_dir / 'points.exr'), np.stack([z, y, x], axis=-1))
+            cv2.imwrite(str(fixture_dir / 'depth.exr'), z)
+            cv2.imwrite(str(fixture_dir / 'image.png'), np.zeros((height, width, 3), dtype=np.uint8))
+            artifacts = {name: (fixture_dir / name).read_bytes() for name in ('points.exr', 'depth.exr', 'image.png')}
+            image_base64 = base64.b64encode(b'same-image-fixture').decode()
+            payload = json.dumps({'imageBase64': image_base64, 'gridWidth': 6, 'gridHeight': 8}).encode()
+            def fake_api(request, timeout):
+                with request_lock:
+                    api_requests.append(request)
+                if request.full_url.endswith('/uploads'):
+                    upload_started.set()
+                    if not release_upload.wait(timeout=10):
+                        raise TimeoutError('Test did not release mocked AI3D upload')
+                    result = {'image_url': 'https://files.example.org/photo.jpg'}
+                else:
+                    result = {'id': 'one-paid-job', 'status': 'succeeded', 'artifacts': [
+                        {'name': name, 'download_url': 'https://files.example.org/' + name} for name in artifacts
+                    ]}
+                return io.BytesIO(json.dumps(result).encode())
+            def fake_artifact(request, timeout):
+                return io.BytesIO(artifacts[request.full_url.rsplit('/', 1)[-1]])
+            with mock.patch.object(depth, 'CACHE_DIR', folder / 'cache'), \
+                 mock.patch.object(depth, 'AI3D_API_KEY', 'dummy-test-key'), \
+                 mock.patch.object(depth, 'Future', TrackingFuture), \
+                 mock.patch.object(depth.urllib.request, 'urlopen', side_effect=fake_api), \
+                 mock.patch.object(depth._ARTIFACT_OPENER, 'open', side_effect=fake_artifact):
+                server = depth.ThreadingHTTPServer(('127.0.0.1', 0), depth.MoGe2GeometryHandler)
+                server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+                server_thread.start()
+                def request_local(method, path, body=None):
+                    connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=5)
+                    try:
+                        connection.request(method, path, body=body, headers={'Content-Type': 'application/json'})
+                        response = connection.getresponse()
+                        return response.status, json.loads(response.read())
+                    finally:
+                        connection.close()
+                try:
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        first = executor.submit(request_local, 'POST', '/estimate-depth', payload)
+                        self.assertTrue(upload_started.wait(timeout=3), 'First inference did not start')
+                        second = executor.submit(request_local, 'POST', '/estimate-depth', payload)
+                        try:
+                            self.assertTrue(duplicate_waiting.wait(timeout=3), 'Duplicate did not join pending inference')
+                            # Both depth requests are still in flight while this separate HTTP request completes.
+                            status, health = request_local('GET', '/health')
+                            self.assertEqual(status, 200)
+                            self.assertTrue(health['ok'])
+                            self.assertTrue(health['apiKeyConfigured'])
+                            self.assertFalse(first.done())
+                            self.assertFalse(second.done())
+                        finally:
+                            release_upload.set()
+                        first_status, first_result = first.result(timeout=5)
+                        second_status, second_result = second.result(timeout=5)
+                        self.assertEqual((first_status, second_status), (200, 200))
+                        self.assertEqual(first_result['pointsGrid'], second_result['pointsGrid'])
+                        self.assertEqual(first_result['sha256'], second_result['sha256'])
+                        self.assertTrue(first_result['ok'])
+                finally:
+                    release_upload.set()
+                    server.shutdown()
+                    server.server_close()
+                    server_thread.join(timeout=3)
+                self.assertEqual(sum(request.full_url.endswith('/uploads') for request in api_requests), 1)
+                self.assertEqual(sum(request.full_url.endswith('/jobs') for request in api_requests), 1)
+                self.assertEqual(depth._IMAGE_JOBS, {})
+
+    def test_waiting_duplicate_receives_failure_without_resubmitting(self):
+        """Concurrent requests share a remote failure instead of creating duplicate paid jobs."""
+        started, release, waiting = threading.Event(), threading.Event(), threading.Event()
+        class TrackingFuture(Future):
+            def result(self, timeout=None):
+                waiting.set()
+                return super().result(timeout=timeout)
+        def fail_remote(*args):
+            started.set()
+            if not release.wait(timeout=5):
+                raise TimeoutError('Test did not release mocked remote failure')
+            raise RuntimeError('mocked remote inference failure')
+        with mock.patch.object(depth, 'Future', TrackingFuture), \
+             mock.patch.object(depth, '_run_moge2_remote_job', side_effect=fail_remote) as submit, \
+             ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(depth.run_moge2_remote_job, b'fixture', 'shared-failure')
+            self.assertTrue(started.wait(timeout=2))
+            second = executor.submit(depth.run_moge2_remote_job, b'fixture', 'shared-failure')
+            try:
+                self.assertTrue(waiting.wait(timeout=2))
+            finally:
+                release.set()
+            for result in (first, second):
+                with self.assertRaisesRegex(RuntimeError, 'mocked remote inference failure'):
+                    result.result(timeout=3)
+            self.assertEqual(submit.call_count, 1)
+            self.assertEqual(depth._IMAGE_JOBS, {})
 
 
 class SyntheticEXRParserTests(unittest.TestCase):
